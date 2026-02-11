@@ -48,3 +48,59 @@ docx-comments input.docx -o output.md -- --reference-doc=template.docx
 - Thread replies are flattened into the root comment text in Word output.
 - Child comments are removed from Word package internals after flattening to avoid duplicate standalone comments.
 - Title comments at document start are supported via comment-ID-based parent mapping (not positional heuristics).
+
+## Tests
+
+Install optional test dependencies:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+```
+
+Run all tests:
+
+```bash
+python3 -m unittest -q
+# or
+make test
+```
+
+`make test` also runs the example roundtrip first and refreshes:
+
+- `artifacts/out_test.md`
+- `artifacts/out_test.docx`
+
+Run roundtrip integration tests only:
+
+```bash
+python3 -m unittest -q tests.test_roundtrip_example
+python3 -m unittest -q tests.test_roundtrip_edges
+# or
+make test-roundtrip
+```
+
+Run a pure example roundtrip and keep outputs for manual inspection:
+
+```bash
+make roundtrip-example
+```
+
+This writes:
+
+- `artifacts/out_test.md`
+- `artifacts/out_test.docx`
+
+Clean those artifacts:
+
+```bash
+make clean-roundtrip-example
+```
+
+When a roundtrip assertion fails, tests write a `failure_bundle/` folder in the test temp directory with snapshots and diffs:
+
+- `original_snapshot.json`
+- `markdown_snapshot.json`
+- `roundtrip_snapshot.json`
+- `expected_flatten.json`
+- `command_logs.json`
+- `mismatch_report.txt`

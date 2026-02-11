@@ -10,3 +10,6 @@ __pycache__/
 # Temporary files
 *.tmp
 *.bak
+
+# Manual roundtrip artifacts
+artifacts/
