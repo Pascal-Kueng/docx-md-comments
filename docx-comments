@@ -20,16 +20,26 @@ from pathlib import Path
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
 W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
+W16CEX_NS = "http://schemas.microsoft.com/office/word/2018/wordml/cex"
+W16CID_NS = "http://schemas.microsoft.com/office/word/2016/wordml/cid"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 PKG_CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 COMMENTS_EXT_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+COMMENTS_IDS_REL_TYPE = "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds"
+COMMENTS_EXTENSIBLE_REL_TYPE = "http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible"
 COMMENTS_EXT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
+COMMENTS_IDS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml"
+COMMENTS_EXTENSIBLE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtensible+xml"
 COMMENTS_EXT_PART_NAME = "/word/commentsExtended.xml"
+COMMENTS_IDS_PART_NAME = "/word/commentsIds.xml"
+COMMENTS_EXTENSIBLE_PART_NAME = "/word/commentsExtensible.xml"
 
 ET.register_namespace("w", W_NS)
 ET.register_namespace("w14", W14_NS)
 ET.register_namespace("w15", W15_NS)
+ET.register_namespace("w16cex", W16CEX_NS)
+ET.register_namespace("w16cid", W16CID_NS)
 COMMENT_START_ATTR_BLOCK_RE = re.compile(r"\{\.comment-start(?P<attrs>[^}]*)\}", re.DOTALL)
 COMMENT_END_ATTR_BLOCK_RE = re.compile(r"\{\.comment-end(?P<attrs>[^}]*)\}", re.DOTALL)
 NESTED_COMMENT_END_WRAPPER_RE = re.compile(
@@ -717,7 +727,17 @@ def generate_unique_para_id(seed: str, used_para_ids):
         counter += 1
 
 
-def ensure_comments_extended_relationship(docx_dir: Path):
+def generate_unique_durable_id(seed: str, used_durable_ids):
+    counter = 0
+    while True:
+        candidate = f"{zlib.crc32(f'{seed}:{counter}'.encode('utf-8')) & 0xFFFFFFFF:08X}"
+        if candidate != "00000000" and candidate not in used_durable_ids:
+            used_durable_ids.add(candidate)
+            return candidate
+        counter += 1
+
+
+def ensure_word_relationship(docx_dir: Path, rel_type: str, target: str):
     rels_path = docx_dir / "word" / "_rels" / "document.xml.rels"
     if not rels_path.exists():
         return False
@@ -734,20 +754,20 @@ def ensure_comments_extended_relationship(docx_dir: Path):
         m = re.match(r"^rId([0-9]+)$", rid)
         if m:
             max_rid = max(max_rid, int(m.group(1)))
-        rel_type = rel.attrib.get("Type", "")
-        target = rel.attrib.get("Target", "")
-        if rel_type == COMMENTS_EXT_REL_TYPE:
+        current_type = rel.attrib.get("Type", "")
+        current_target = rel.attrib.get("Target", "")
+        if current_type == rel_type:
             has_ext_rel = True
-            if target != "commentsExtended.xml":
-                rel.attrib["Target"] = "commentsExtended.xml"
+            if current_target != target:
+                rel.attrib["Target"] = target
                 changed = True
 
     if not has_ext_rel:
         rel_ns = root.tag.split("}", 1)[0][1:] if root.tag.startswith("{") else PKG_REL_NS
         rel = ET.SubElement(root, f"{{{rel_ns}}}Relationship")
         rel.set("Id", f"rId{max_rid + 1}")
-        rel.set("Type", COMMENTS_EXT_REL_TYPE)
-        rel.set("Target", "commentsExtended.xml")
+        rel.set("Type", rel_type)
+        rel.set("Target", target)
         changed = True
 
     if changed:
@@ -755,7 +775,7 @@ def ensure_comments_extended_relationship(docx_dir: Path):
     return changed
 
 
-def ensure_comments_extended_content_type(docx_dir: Path):
+def ensure_word_content_type_override(docx_dir: Path, part_name: str, content_type: str):
     content_types_path = docx_dir / "[Content_Types].xml"
     if not content_types_path.exists():
         return False
@@ -768,23 +788,71 @@ def ensure_comments_extended_content_type(docx_dir: Path):
     for elem in root:
         if local_name(elem.tag) != "Override":
             continue
-        part_name = elem.attrib.get("PartName", "")
-        if part_name == COMMENTS_EXT_PART_NAME:
+        current_part_name = elem.attrib.get("PartName", "")
+        if current_part_name == part_name:
             has_override = True
-            if elem.attrib.get("ContentType", "") != COMMENTS_EXT_CONTENT_TYPE:
-                elem.attrib["ContentType"] = COMMENTS_EXT_CONTENT_TYPE
+            if elem.attrib.get("ContentType", "") != content_type:
+                elem.attrib["ContentType"] = content_type
                 changed = True
             break
 
     if not has_override:
         override = ET.SubElement(root, f"{{{ct_ns}}}Override")
-        override.set("PartName", COMMENTS_EXT_PART_NAME)
-        override.set("ContentType", COMMENTS_EXT_CONTENT_TYPE)
+        override.set("PartName", part_name)
+        override.set("ContentType", content_type)
         changed = True
 
     if changed:
         write_xml(tree, content_types_path)
     return changed
+
+
+def ensure_comments_extended_relationship(docx_dir: Path):
+    return ensure_word_relationship(docx_dir, COMMENTS_EXT_REL_TYPE, "commentsExtended.xml")
+
+
+def ensure_comments_ids_relationship(docx_dir: Path):
+    return ensure_word_relationship(docx_dir, COMMENTS_IDS_REL_TYPE, "commentsIds.xml")
+
+
+def ensure_comments_extensible_relationship(docx_dir: Path):
+    return ensure_word_relationship(docx_dir, COMMENTS_EXTENSIBLE_REL_TYPE, "commentsExtensible.xml")
+
+
+def ensure_comments_extended_content_type(docx_dir: Path):
+    return ensure_word_content_type_override(docx_dir, COMMENTS_EXT_PART_NAME, COMMENTS_EXT_CONTENT_TYPE)
+
+
+def ensure_comments_ids_content_type(docx_dir: Path):
+    return ensure_word_content_type_override(docx_dir, COMMENTS_IDS_PART_NAME, COMMENTS_IDS_CONTENT_TYPE)
+
+
+def ensure_comments_extensible_content_type(docx_dir: Path):
+    return ensure_word_content_type_override(
+        docx_dir,
+        COMMENTS_EXTENSIBLE_PART_NAME,
+        COMMENTS_EXTENSIBLE_CONTENT_TYPE,
+    )
+
+
+def load_comments_ids_durable_map(docx_dir: Path):
+    comments_ids_path = docx_dir / "word" / "commentsIds.xml"
+    para_to_durable = {}
+    used_durable_ids = set()
+    if not comments_ids_path.exists():
+        return para_to_durable, used_durable_ids
+
+    _, root = read_xml(comments_ids_path)
+    for elem in root.iter():
+        if local_name(elem.tag) != "commentId":
+            continue
+        para_id = get_attr_local(elem, "paraId")
+        durable_id = get_attr_local(elem, "durableId")
+        if durable_id:
+            used_durable_ids.add(durable_id)
+        if para_id and durable_id:
+            para_to_durable[para_id] = durable_id
+    return para_to_durable, used_durable_ids
 
 
 def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
@@ -794,7 +862,7 @@ def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
 
     tree, root = read_xml(comments_path)
     root_set = {str(cid) for cid in root_ids}
-    root_para_ids = {}
+    root_meta_by_id = {}
     root_order = []
     changed_comments_xml = False
 
@@ -808,6 +876,8 @@ def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
             p_para_id = get_attr_local(first_p, "paraId")
             if p_para_id:
                 used_para_ids.add(p_para_id)
+
+    existing_durable_by_para, used_durable_ids = load_comments_ids_durable_map(docx_dir)
 
     for comment in root.findall(f".//{{{W_NS}}}comment"):
         cid = get_attr_local(comment, "id")
@@ -823,7 +893,14 @@ def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
             para_id = generate_unique_para_id(f"comment-{cid}", used_para_ids)
             first_p.set(f"{{{W14_NS}}}paraId", para_id)
             changed_comments_xml = True
-        root_para_ids[cid] = para_id
+        durable_id = existing_durable_by_para.get(para_id)
+        if not durable_id:
+            durable_id = generate_unique_durable_id(f"durable-{para_id}", used_durable_ids)
+        root_meta_by_id[cid] = {
+            "para_id": para_id,
+            "durable_id": durable_id,
+            "date": get_attr_local(comment, "date") or "",
+        }
         root_order.append(cid)
 
     if changed_comments_xml:
@@ -834,7 +911,8 @@ def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
 
     comments_ext_root = ET.Element(f"{{{W15_NS}}}commentsEx")
     for cid in root_order:
-        para_id = root_para_ids.get(cid)
+        meta = root_meta_by_id.get(cid) or {}
+        para_id = meta.get("para_id")
         if not para_id:
             continue
         state_token = parse_state_token((state_by_id or {}).get(cid))
@@ -842,11 +920,40 @@ def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
         entry.set(f"{{{W15_NS}}}paraId", para_id)
         entry.set(f"{{{W15_NS}}}done", "1" if state_token == "resolved" else "0")
 
-    comments_ext_path = docx_dir / "word" / "commentsExtended.xml"
-    write_xml(ET.ElementTree(comments_ext_root), comments_ext_path)
+    comments_ids_root = ET.Element(f"{{{W16CID_NS}}}commentsIds")
+    comments_extensible_root = ET.Element(f"{{{W16CEX_NS}}}commentsExtensible")
+    for cid in root_order:
+        meta = root_meta_by_id.get(cid) or {}
+        para_id = meta.get("para_id")
+        durable_id = meta.get("durable_id")
+        date_utc = meta.get("date") or ""
+        if not para_id or not durable_id:
+            continue
+        id_entry = ET.SubElement(comments_ids_root, f"{{{W16CID_NS}}}commentId")
+        id_entry.set(f"{{{W16CID_NS}}}paraId", para_id)
+        id_entry.set(f"{{{W16CID_NS}}}durableId", durable_id)
+        ext_entry = ET.SubElement(comments_extensible_root, f"{{{W16CEX_NS}}}commentExtensible")
+        ext_entry.set(f"{{{W16CEX_NS}}}durableId", durable_id)
+        if date_utc:
+            ext_entry.set(f"{{{W16CEX_NS}}}dateUtc", date_utc)
 
-    rel_changed = ensure_comments_extended_relationship(docx_dir)
-    ct_changed = ensure_comments_extended_content_type(docx_dir)
+    comments_ext_path = docx_dir / "word" / "commentsExtended.xml"
+    comments_ids_path = docx_dir / "word" / "commentsIds.xml"
+    comments_extensible_path = docx_dir / "word" / "commentsExtensible.xml"
+    write_xml(ET.ElementTree(comments_ext_root), comments_ext_path)
+    write_xml(ET.ElementTree(comments_ids_root), comments_ids_path)
+    write_xml(ET.ElementTree(comments_extensible_root), comments_extensible_path)
+
+    rel_changed = False
+    rel_changed |= ensure_comments_extended_relationship(docx_dir)
+    rel_changed |= ensure_comments_ids_relationship(docx_dir)
+    rel_changed |= ensure_comments_extensible_relationship(docx_dir)
+
+    ct_changed = False
+    ct_changed |= ensure_comments_extended_content_type(docx_dir)
+    ct_changed |= ensure_comments_ids_content_type(docx_dir)
+    ct_changed |= ensure_comments_extensible_content_type(docx_dir)
+
     return 1 if (changed_comments_xml or rel_changed or ct_changed or root_order) else 0
 
 
@@ -916,6 +1023,7 @@ def prune_child_comment_artifacts(docx_dir: Path, child_ids):
 
     # Keep package internals consistent: prune child entries in extension/id files.
     if child_para_ids:
+        child_durable_ids = set()
         comments_ext_path = docx_dir / "word" / "commentsExtended.xml"
         if comments_ext_path.exists():
             tree, root = read_xml(comments_ext_path)
@@ -942,11 +1050,30 @@ def prune_child_comment_artifacts(docx_dir: Path, child_ids):
                         continue
                     para_id = get_attr_local(child, "paraId")
                     if para_id in child_para_ids:
+                        durable_id = get_attr_local(child, "durableId")
+                        if durable_id:
+                            child_durable_ids.add(durable_id)
                         parent.remove(child)
                         removed += 1
                         changed = True
             if changed:
                 write_xml(tree, comments_ids_path)
+
+        comments_extensible_path = docx_dir / "word" / "commentsExtensible.xml"
+        if comments_extensible_path.exists() and child_durable_ids:
+            tree, root = read_xml(comments_extensible_path)
+            changed = False
+            for parent in root.iter():
+                for child in list(parent):
+                    if local_name(child.tag) != "commentExtensible":
+                        continue
+                    durable_id = get_attr_local(child, "durableId")
+                    if durable_id in child_durable_ids:
+                        parent.remove(child)
+                        removed += 1
+                        changed = True
+            if changed:
+                write_xml(tree, comments_extensible_path)
 
     return removed
 
