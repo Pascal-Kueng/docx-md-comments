@@ -1,0 +1,1123 @@
+#!/usr/bin/env python3
+
+import sys
+
+# Prevent __pycache__ writes next to this stowed script.
+sys.dont_write_bytecode = True
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import zipfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
+XML_NS = "http://www.w3.org/XML/1998/namespace"
+
+ET.register_namespace("w", W_NS)
+COMMENT_START_ATTR_BLOCK_RE = re.compile(r"\{\.comment-start(?P<attrs>[^}]*)\}", re.DOTALL)
+COMMENT_END_ATTR_BLOCK_RE = re.compile(r"\{\.comment-end(?P<attrs>[^}]*)\}", re.DOTALL)
+KV_ATTR_RE = re.compile(r'([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"')
+INLINE_IMAGE_RE = re.compile(
+    r'!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)(?:\s+"(?P<title>[^"]*)")?\)\{(?P<attrs>[^}]*)\}',
+    re.DOTALL,
+)
+IMAGE_LINK_RE = re.compile(r'!\[[^\]]*\]\((?P<src>[^)\s]+)(?:\s+"[^"]*")?\)', re.DOTALL)
+
+
+def local_name(tag: str) -> str:
+    if "}" in tag:
+        return tag.rsplit("}", 1)[1]
+    return tag
+
+
+def get_attr_local(elem: ET.Element, attr_name: str):
+    for key, value in elem.attrib.items():
+        if key == attr_name or key.endswith("}" + attr_name):
+            return value
+    return None
+
+
+def read_xml(xml_path: Path):
+    tree = ET.parse(xml_path)
+    return tree, tree.getroot()
+
+
+def write_xml(tree: ET.ElementTree, xml_path: Path):
+    tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+
+
+def extract_docx(docx_path: Path, target_dir: Path):
+    with zipfile.ZipFile(docx_path, "r") as zf:
+        zf.extractall(target_dir)
+
+
+def pack_docx(source_dir: Path, output_docx: Path):
+    with zipfile.ZipFile(output_docx, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(source_dir):
+            for filename in sorted(files):
+                full_path = Path(root) / filename
+                arcname = full_path.relative_to(source_dir).as_posix()
+                zf.write(full_path, arcname)
+
+
+def run_pandoc(in_path: Path, out_path: Path, fmt_from=None, fmt_to=None, extra_args=None, cwd=None):
+    cmd = ["pandoc", str(in_path)]
+    if fmt_from:
+        cmd.extend(["-f", fmt_from])
+    if fmt_to:
+        cmd.extend(["-t", fmt_to])
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend(["-o", str(out_path)])
+    subprocess.run(cmd, check=True, cwd=str(cwd) if cwd else None)
+
+
+def temp_dir_root_for(path: Path):
+    parent = path.parent
+    if parent.exists() and os.access(parent, os.W_OK):
+        return parent
+    return None
+
+
+def annotate_markdown_parent_attrs(md_path: Path, parent_map):
+    if not parent_map:
+        return 0
+    text = md_path.read_text(encoding="utf-8")
+    changed = 0
+
+    def repl(match):
+        nonlocal changed
+        attrs = match.group("attrs")
+        kv = {k: v for k, v in KV_ATTR_RE.findall(attrs)}
+        cid = kv.get("id")
+        if not cid:
+            return match.group(0)
+        pid = parent_map.get(cid)
+        if not pid:
+            return match.group(0)
+        if kv.get("parent"):
+            return match.group(0)
+        changed += 1
+        return "{.comment-start" + attrs + f' parent="{pid}"' + "}"
+
+    updated = COMMENT_START_ATTR_BLOCK_RE.sub(repl, text)
+    if changed:
+        md_path.write_text(updated, encoding="utf-8")
+    return changed
+
+
+def repair_unbalanced_comment_markers(markdown_text: str):
+    starts = []
+    end_positions_by_id = {}
+
+    for m in COMMENT_START_ATTR_BLOCK_RE.finditer(markdown_text):
+        attrs = {k: v for k, v in KV_ATTR_RE.findall(m.group("attrs"))}
+        cid = attrs.get("id")
+        if not cid:
+            continue
+        starts.append(
+            {
+                "id": cid,
+                "parent": attrs.get("parent", ""),
+                "pos_end": m.end(),
+            }
+        )
+
+    for m in COMMENT_END_ATTR_BLOCK_RE.finditer(markdown_text):
+        attrs = {k: v for k, v in KV_ATTR_RE.findall(m.group("attrs"))}
+        cid = attrs.get("id")
+        if not cid:
+            continue
+        end_positions_by_id.setdefault(cid, []).append(m.end())
+
+    start_ids = [s["id"] for s in starts]
+    if not start_ids:
+        return markdown_text, 0
+    missing_ids = [cid for cid in start_ids if cid not in end_positions_by_id]
+    if not missing_ids:
+        return markdown_text, 0
+
+    starts_by_id = {s["id"]: s for s in starts}
+    children = {}
+    for s in starts:
+        pid = (s.get("parent") or "").strip()
+        if pid:
+            children.setdefault(pid, []).append(s["id"])
+
+    def descendant_end_positions(cid, seen):
+        if cid in seen:
+            return []
+        seen.add(cid)
+        out = []
+        for child_id in children.get(cid, []):
+            out.extend(end_positions_by_id.get(child_id, []))
+            out.extend(descendant_end_positions(child_id, seen))
+        return out
+
+    insertions = []
+    for cid in missing_ids:
+        base = starts_by_id[cid]["pos_end"]
+        desc_ends = descendant_end_positions(cid, set())
+        pos = max(desc_ends) if desc_ends else base
+        insertions.append((pos, f'[]{{.comment-end id="{cid}"}}'))
+
+    updated = markdown_text
+    for pos, token in sorted(insertions, key=lambda x: x[0], reverse=True):
+        updated = updated[:pos] + token + updated[pos:]
+
+    return updated, len(insertions)
+
+
+def normalize_markdown_comment_text(text: str) -> str:
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # Pandoc emits hard line breaks in comment brackets as backslash-newline.
+    text = re.sub(r"\\+[ \t]*\n", "\n", text)
+    # Handle wrapped hard-break output forms like "\\ " conservatively.
+    text = re.sub(r"\\\\[ \t]+", "\n", text)
+    return text.strip()
+
+
+def run_pandoc_json(in_path: Path, fmt_from=None, extra_args=None):
+    cmd = ["pandoc", str(in_path)]
+    if fmt_from:
+        cmd.extend(["-f", fmt_from])
+    if extra_args:
+        cmd.extend(extra_args)
+    cmd.extend(["-t", "json"])
+    out = subprocess.check_output(cmd, text=True)
+    return json.loads(out)
+
+
+def has_extract_media_arg(args):
+    for arg in args or []:
+        if arg == "--extract-media" or arg.startswith("--extract-media="):
+            return True
+    return False
+
+
+def parse_length_to_inches(length_value: str):
+    if not length_value:
+        return None
+    m = re.match(r"^\s*([0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)\s*([a-zA-Z]*)\s*$", length_value)
+    if not m:
+        return None
+    value = float(m.group(1))
+    unit = (m.group(2) or "in").lower()
+    if unit == "in":
+        return value
+    if unit == "cm":
+        return value / 2.54
+    if unit == "mm":
+        return value / 25.4
+    if unit == "pt":
+        return value / 72.0
+    if unit == "px":
+        return value / 96.0
+    return None
+
+
+def should_strip_placeholder_image(alt, src, title, attrs):
+    title = (title or "").strip().lower()
+    alt = (alt or "").strip()
+    if alt:
+        return False
+    if title != "shape":
+        return False
+
+    src_norm = (src or "").strip().lower()
+    if "/media/" not in f"/{src_norm}" and not src_norm.startswith("./media/"):
+        return False
+
+    basename = Path(src_norm).name
+    if not re.match(r"^image[0-9]+\.(png|jpg|jpeg|gif|bmp|emf|wmf|svg)$", basename):
+        return False
+
+    kv = {k: v for k, v in KV_ATTR_RE.findall(attrs or "")}
+    width_in = parse_length_to_inches(kv.get("width", ""))
+    height_in = parse_length_to_inches(kv.get("height", ""))
+    if width_in is None or height_in is None:
+        return False
+    return width_in <= 0.03 and height_in <= 0.03
+
+
+def strip_placeholder_shape_images(markdown_text: str):
+    removed = []
+
+    def repl(match):
+        alt = match.group("alt")
+        src = match.group("src")
+        title = match.group("title")
+        attrs = match.group("attrs")
+        if should_strip_placeholder_image(alt, src, title, attrs):
+            removed.append(src)
+            return ""
+        return match.group(0)
+
+    updated = INLINE_IMAGE_RE.sub(repl, markdown_text)
+    # Normalize excess whitespace left behind by removals.
+    updated = re.sub(r"\n{3,}", "\n\n", updated).strip() + "\n"
+    return updated, removed
+
+
+def list_files_relative(root_dir: Path):
+    if not root_dir.exists():
+        return set()
+    out = set()
+    for p in root_dir.rglob("*"):
+        if p.is_file():
+            out.add(p.relative_to(root_dir).as_posix())
+    return out
+
+
+def extract_media_refs_from_markdown(markdown_text: str):
+    refs = set()
+    for m in IMAGE_LINK_RE.finditer(markdown_text):
+        src = (m.group("src") or "").strip()
+        if not src:
+            continue
+        if src.startswith("./"):
+            src = src[2:]
+        if src.startswith("media/"):
+            refs.add(src[len("media/") :])
+    return refs
+
+
+def prune_unreferenced_new_media(media_dir: Path, files_before, markdown_text: str):
+    if not media_dir.exists():
+        return 0
+    refs = extract_media_refs_from_markdown(markdown_text)
+    files_after = list_files_relative(media_dir)
+    created = files_after - files_before
+    removed = 0
+    for rel in created:
+        if rel not in refs:
+            p = media_dir / rel
+            if p.exists() and p.is_file():
+                p.unlink()
+                removed += 1
+    # Clean up empty directories left behind.
+    for d in sorted(media_dir.rglob("*"), reverse=True):
+        if d.is_dir():
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+    if media_dir.exists():
+        try:
+            media_dir.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
+def inlines_to_text(inlines):
+    parts = []
+
+    def emit(text):
+        if text:
+            parts.append(text)
+
+    def walk_inline(node):
+        if not isinstance(node, dict):
+            return
+        t = node.get("t")
+        c = node.get("c")
+        if t == "Str":
+            emit(c or "")
+        elif t == "Space":
+            emit(" ")
+        elif t == "SoftBreak":
+            if parts and parts[-1].endswith("\\"):
+                parts[-1] = parts[-1].rstrip("\\")
+                emit("\n")
+            else:
+                emit(" ")
+        elif t == "LineBreak":
+            # Convert line break markers in markdown comments to real newlines.
+            if parts and parts[-1].endswith("\\"):
+                parts[-1] = parts[-1].rstrip("\\")
+            emit("\n")
+        elif t in {"Code", "Math"}:
+            if isinstance(c, list) and c:
+                emit(c[-1] or "")
+            elif isinstance(c, str):
+                emit(c)
+        elif t == "Span":
+            # Span c = [attr, inlines]
+            if isinstance(c, list) and len(c) == 2 and isinstance(c[1], list):
+                for item in c[1]:
+                    walk_inline(item)
+        elif t in {"Emph", "Strong", "Strikeout", "Superscript", "Subscript", "SmallCaps", "Underline"}:
+            # Emph/Strong/etc. c = inlines
+            if isinstance(c, list):
+                for item in c:
+                    walk_inline(item)
+        elif t == "Quoted":
+            # Quoted c = [quoteType, inlines]
+            if isinstance(c, list) and len(c) >= 2 and isinstance(c[1], list):
+                for item in c[1]:
+                    walk_inline(item)
+        elif t == "Cite":
+            # Cite c = [citations, inlines]
+            if isinstance(c, list) and len(c) >= 2 and isinstance(c[1], list):
+                for item in c[1]:
+                    walk_inline(item)
+        elif t in {"Link", "Image"}:
+            if isinstance(c, list) and len(c) >= 2 and isinstance(c[1], list):
+                for item in c[1]:
+                    walk_inline(item)
+        elif t == "RawInline":
+            # Keep plain textual payload where possible.
+            if isinstance(c, list) and len(c) >= 2 and isinstance(c[1], str):
+                emit(c[1])
+        elif isinstance(c, list):
+            for item in c:
+                if isinstance(item, dict):
+                    walk_inline(item)
+
+    for item in inlines or []:
+        walk_inline(item)
+    text = "".join(parts)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return normalize_markdown_comment_text(text)
+
+
+def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args):
+    doc = run_pandoc_json(md_path, fmt_from="markdown", extra_args=pandoc_extra_args)
+    own_text_by_id = {}
+    children_by_id = {}
+    meta_by_id = {}
+    parent_by_id = {}
+    seen_order = []
+    started_ids = set()
+
+    def ensure_comment_id(comment_id: str):
+        if comment_id not in children_by_id:
+            children_by_id[comment_id] = []
+        if comment_id not in own_text_by_id:
+            own_text_by_id[comment_id] = ""
+        if comment_id not in meta_by_id:
+            meta_by_id[comment_id] = {}
+        if comment_id not in seen_order:
+            seen_order.append(comment_id)
+
+    def add_child(parent_id: str, child_id: str):
+        ensure_comment_id(parent_id)
+        ensure_comment_id(child_id)
+        if child_id not in children_by_id[parent_id]:
+            children_by_id[parent_id].append(child_id)
+
+    def on_comment_start(comment_id: str, text: str, meta):
+        ensure_comment_id(comment_id)
+        started_ids.add(comment_id)
+        text = (text or "").strip()
+        if text:
+            existing = (own_text_by_id.get(comment_id) or "").strip()
+            if not existing:
+                own_text_by_id[comment_id] = text
+            elif text != existing and text not in existing:
+                own_text_by_id[comment_id] = f"{existing}\n\n{text}"
+        if meta:
+            if meta.get("author") and not meta_by_id[comment_id].get("author"):
+                meta_by_id[comment_id]["author"] = meta["author"]
+            if meta.get("date") and not meta_by_id[comment_id].get("date"):
+                meta_by_id[comment_id]["date"] = meta["date"]
+            parent_id = (meta.get("parent") or "").strip()
+            if parent_id:
+                parent_by_id[comment_id] = parent_id
+
+    def parse_span_meta(attr):
+        if not (isinstance(attr, list) and len(attr) == 3):
+            return None
+        identifier = attr[0]
+        classes = attr[1] or []
+        kvs = attr[2] or []
+        meta = {}
+        if isinstance(kvs, list):
+            for item in kvs:
+                if isinstance(item, list) and len(item) == 2:
+                    key, value = item
+                    if key in {"author", "date", "parent"}:
+                        meta[key] = value
+        return identifier, classes, meta
+
+    def walk_inlines(inlines):
+        for node in inlines or []:
+            if not isinstance(node, dict):
+                continue
+            t = node.get("t")
+            c = node.get("c")
+
+            if t == "Span" and isinstance(c, list) and len(c) == 2:
+                attr, nested_inlines = c
+                parsed = parse_span_meta(attr)
+                if parsed is not None:
+                    identifier, classes, meta = parsed
+                    if identifier and "comment-start" in classes:
+                        on_comment_start(identifier, inlines_to_text(nested_inlines), meta)
+                        continue
+                walk_inlines(nested_inlines)
+                continue
+
+            if t == "Str":
+                continue
+
+            if t in {
+                "Emph",
+                "Strong",
+                "Strikeout",
+                "Superscript",
+                "Subscript",
+                "SmallCaps",
+                "Underline",
+                "Quoted",
+                "Cite",
+            } and isinstance(c, list):
+                tail = c[-1] if c else []
+                if isinstance(tail, list):
+                    walk_inlines(tail)
+                continue
+
+            if t in {"Link", "Image"} and isinstance(c, list) and len(c) >= 2:
+                if isinstance(c[1], list):
+                    walk_inlines(c[1])
+                continue
+
+            if isinstance(c, list):
+                # Fallback for rarely used inline constructors.
+                walk_inlines([item for item in c if isinstance(item, dict)])
+
+    def walk_blocks(blocks):
+        for block in blocks or []:
+            if not isinstance(block, dict):
+                continue
+            t = block.get("t")
+            c = block.get("c")
+
+            if t in {"Para", "Plain", "Header"} and isinstance(c, list):
+                if t == "Header" and len(c) >= 3 and isinstance(c[2], list):
+                    walk_inlines(c[2])
+                else:
+                    walk_inlines(c)
+                continue
+
+            if t == "BlockQuote" and isinstance(c, list):
+                walk_blocks(c)
+                continue
+
+            if t in {"BulletList", "OrderedList"} and isinstance(c, list):
+                items = c if t == "BulletList" else (c[1] if len(c) > 1 else [])
+                for item in items:
+                    walk_blocks(item)
+                continue
+
+            if t == "DefinitionList" and isinstance(c, list):
+                for term, defs in c:
+                    walk_inlines(term)
+                    for d in defs:
+                        walk_blocks(d)
+                continue
+
+            if t == "Div" and isinstance(c, list) and len(c) == 2 and isinstance(c[1], list):
+                walk_blocks(c[1])
+                continue
+
+            if t == "Table" and isinstance(c, list):
+                # Traverse nested table content for completeness.
+                for item in c:
+                    if isinstance(item, list):
+                        walk_blocks([x for x in item if isinstance(x, dict)])
+                continue
+
+    walk_blocks(doc.get("blocks", []))
+    valid_parent_by_id = {}
+    for child_id in seen_order:
+        if child_id not in started_ids:
+            continue
+        parent_id = (parent_by_id.get(child_id) or "").strip()
+        # Safety: only treat as threaded when both child and parent were seen
+        # as real comment-start spans in markdown.
+        if (
+            not parent_id
+            or parent_id == child_id
+            or parent_id not in started_ids
+        ):
+            continue
+        valid_parent_by_id[child_id] = parent_id
+        add_child(parent_id, child_id)
+
+    flattened_by_id = {}
+
+    def reply_header(comment_id: str):
+        meta = meta_by_id.get(comment_id, {})
+        author = (meta.get("author") or "Unknown").strip() or "Unknown"
+        date = (meta.get("date") or "").strip()
+        if date:
+            return f"---\nReply from: {author} ({date})\n---"
+        return f"---\nReply from: {author}\n---"
+
+    def flatten_comment(comment_id: str, seen):
+        if comment_id in seen:
+            return own_text_by_id.get(comment_id, "").strip()
+        seen.add(comment_id)
+
+        parts = []
+        own = own_text_by_id.get(comment_id, "").strip()
+        if own:
+            parts.append(own)
+        for child_id in children_by_id.get(comment_id, []):
+            child_flat = flatten_comment(child_id, seen)
+            if child_flat:
+                parts.append(f"{reply_header(child_id)}\n{child_flat}")
+        return "\n\n".join(parts).strip()
+
+    ordered_started_ids = [cid for cid in seen_order if cid in started_ids]
+    if not ordered_started_ids:
+        ordered_started_ids = list(seen_order)
+
+    for cid in ordered_started_ids:
+        flattened_by_id[cid] = flatten_comment(cid, set())
+
+    child_ids = set(valid_parent_by_id.keys())
+    root_ids = [cid for cid in ordered_started_ids if cid not in child_ids]
+    if not root_ids:
+        root_ids = list(ordered_started_ids)
+
+    return {
+        "flattened_by_id": flattened_by_id,
+        "parent_by_id": valid_parent_by_id,
+        "child_ids": child_ids,
+        "root_ids": root_ids,
+    }
+
+
+def append_comment_paragraph(comment_elem: ET.Element, text: str, with_annotation_ref=False):
+    p = ET.SubElement(comment_elem, f"{{{W_NS}}}p")
+    ppr = ET.SubElement(p, f"{{{W_NS}}}pPr")
+    pstyle = ET.SubElement(ppr, f"{{{W_NS}}}pStyle")
+    pstyle.set(f"{{{W_NS}}}val", "CommentText")
+
+    if with_annotation_ref:
+        ref_r = ET.SubElement(p, f"{{{W_NS}}}r")
+        ref_rpr = ET.SubElement(ref_r, f"{{{W_NS}}}rPr")
+        ref_style = ET.SubElement(ref_rpr, f"{{{W_NS}}}rStyle")
+        ref_style.set(f"{{{W_NS}}}val", "CommentReference")
+        ET.SubElement(ref_r, f"{{{W_NS}}}annotationRef")
+
+    if text or not with_annotation_ref:
+        r = ET.SubElement(p, f"{{{W_NS}}}r")
+        t = ET.SubElement(r, f"{{{W_NS}}}t")
+        if text[:1].isspace() or text[-1:].isspace():
+            t.set(f"{{{XML_NS}}}space", "preserve")
+        t.text = text
+
+
+def rewrite_comment_bodies_from_markdown(docx_dir: Path, comment_text_by_id, root_ids):
+    comments_path = docx_dir / "word" / "comments.xml"
+    if not comments_path.exists() or not comment_text_by_id or not root_ids:
+        return 0
+
+    tree, root = read_xml(comments_path)
+    changed = 0
+    root_set = {str(cid) for cid in root_ids}
+
+    for comment in root.findall(f".//{{{W_NS}}}comment"):
+        cid = get_attr_local(comment, "id")
+        if cid is None or cid not in root_set or cid not in comment_text_by_id:
+            continue
+
+        for attr_name in list(comment.attrib.keys()):
+            if attr_name == "parent" or attr_name.endswith("}parent"):
+                del comment.attrib[attr_name]
+
+        raw = comment_text_by_id.get(cid, "").strip()
+        lines = raw.split("\n") if raw else [""]
+
+        for child in list(comment):
+            comment.remove(child)
+
+        first = True
+        for line in lines:
+            append_comment_paragraph(comment, line, with_annotation_ref=first)
+            first = False
+        changed += 1
+
+    if changed:
+        write_xml(tree, comments_path)
+    return changed
+
+
+def word_story_xml_candidates(docx_dir: Path):
+    word_dir = docx_dir / "word"
+    candidates = [
+        word_dir / "document.xml",
+        word_dir / "footnotes.xml",
+        word_dir / "endnotes.xml",
+    ]
+    candidates.extend(sorted(word_dir.glob("header*.xml")))
+    candidates.extend(sorted(word_dir.glob("footer*.xml")))
+    return [p for p in candidates if p.exists()]
+
+
+def prune_child_comment_artifacts(docx_dir: Path, child_ids):
+    child_set = {str(cid) for cid in (child_ids or []) if str(cid)}
+    if not child_set:
+        return 0
+
+    removed = 0
+
+    # Remove child anchors/references in all word "story" XMLs.
+    for xml_path in word_story_xml_candidates(docx_dir):
+        tree, root = read_xml(xml_path)
+        changed = False
+        for parent in root.iter():
+            for child in list(parent):
+                lname = local_name(child.tag)
+                if lname not in {"commentRangeStart", "commentRangeEnd", "commentReference"}:
+                    continue
+                cid = get_attr_local(child, "id")
+                if cid in child_set:
+                    parent.remove(child)
+                    removed += 1
+                    changed = True
+        if changed:
+            write_xml(tree, xml_path)
+
+    # Remove child comment nodes from comments.xml and capture paraIds.
+    child_para_ids = set()
+    comments_path = docx_dir / "word" / "comments.xml"
+    if comments_path.exists():
+        tree, root = read_xml(comments_path)
+        changed = False
+        for parent in root.iter():
+            for child in list(parent):
+                if local_name(child.tag) != "comment":
+                    continue
+                cid = get_attr_local(child, "id")
+                if cid not in child_set:
+                    continue
+                para_id = get_attr_local(child, "paraId")
+                if not para_id:
+                    for node in child.iter():
+                        if local_name(node.tag) == "p":
+                            para_id = get_attr_local(node, "paraId")
+                            if para_id:
+                                break
+                if para_id:
+                    child_para_ids.add(para_id)
+                parent.remove(child)
+                removed += 1
+                changed = True
+        if changed:
+            write_xml(tree, comments_path)
+
+    # Keep package internals consistent: prune child entries in extension/id files.
+    if child_para_ids:
+        comments_ext_path = docx_dir / "word" / "commentsExtended.xml"
+        if comments_ext_path.exists():
+            tree, root = read_xml(comments_ext_path)
+            changed = False
+            for parent in root.iter():
+                for child in list(parent):
+                    if local_name(child.tag) != "commentEx":
+                        continue
+                    para_id = get_attr_local(child, "paraId")
+                    if para_id in child_para_ids:
+                        parent.remove(child)
+                        removed += 1
+                        changed = True
+            if changed:
+                write_xml(tree, comments_ext_path)
+
+        comments_ids_path = docx_dir / "word" / "commentsIds.xml"
+        if comments_ids_path.exists():
+            tree, root = read_xml(comments_ids_path)
+            changed = False
+            for parent in root.iter():
+                for child in list(parent):
+                    if local_name(child.tag) != "commentId":
+                        continue
+                    para_id = get_attr_local(child, "paraId")
+                    if para_id in child_para_ids:
+                        parent.remove(child)
+                        removed += 1
+                        changed = True
+            if changed:
+                write_xml(tree, comments_ids_path)
+
+    return removed
+
+
+def extract_comment_text(comment_elem: ET.Element) -> str:
+    paragraphs = []
+    for p in comment_elem.iter(f"{{{W_NS}}}p"):
+        pieces = []
+        for node in p.iter():
+            lname = local_name(node.tag)
+            if lname == "t" and node.text:
+                pieces.append(node.text)
+            elif lname == "tab":
+                pieces.append("\t")
+            elif lname in {"br", "cr"}:
+                pieces.append("\n")
+        text = "".join(pieces).strip()
+        if text:
+            paragraphs.append(text)
+    return "\n".join(paragraphs).strip()
+
+
+def parse_docx_comments(docx_dir: Path):
+    comments_path = docx_dir / "word" / "comments.xml"
+    comments_ext_path = docx_dir / "word" / "commentsExtended.xml"
+    comments_ids_path = docx_dir / "word" / "commentsIds.xml"
+
+    comments = {}
+    parent_map = {}
+    para_to_id = {}
+    ordered_comment_ids = []
+
+    if comments_path.exists():
+        _, root = read_xml(comments_path)
+        for idx, comment in enumerate(root.findall(f".//{{{W_NS}}}comment")):
+            cid = get_attr_local(comment, "id")
+            if cid is None:
+                continue
+            author = get_attr_local(comment, "author") or ""
+            date = get_attr_local(comment, "date") or ""
+            text = extract_comment_text(comment)
+            para_id = get_attr_local(comment, "paraId")
+            parent = get_attr_local(comment, "parentId")
+            if para_id:
+                para_to_id[para_id] = cid
+            if parent:
+                parent_map[cid] = parent
+            ordered_comment_ids.append(cid)
+            comments[cid] = {
+                "author": author,
+                "date": date,
+                "text": text,
+                "order": idx,
+            }
+
+    # Some Word versions store paraId only in commentsIds.xml.
+    # In these files, comments.xml and commentsIds.xml are aligned by order.
+    if comments_ids_path.exists() and ordered_comment_ids:
+        _, cid_root = read_xml(comments_ids_path)
+        para_ids_in_order = []
+        for elem in cid_root.iter():
+            if local_name(elem.tag) != "commentId":
+                continue
+            para_id = get_attr_local(elem, "paraId")
+            if para_id:
+                para_ids_in_order.append(para_id)
+        if len(para_ids_in_order) == len(ordered_comment_ids):
+            for comment_id, para_id in zip(ordered_comment_ids, para_ids_in_order):
+                if para_id and para_id not in para_to_id:
+                    para_to_id[para_id] = comment_id
+
+    if comments_ext_path.exists() and para_to_id:
+        _, root = read_xml(comments_ext_path)
+        for elem in root.iter():
+            if local_name(elem.tag) != "commentEx":
+                continue
+            para_id = get_attr_local(elem, "paraId")
+            parent_para_id = get_attr_local(elem, "paraIdParent")
+            if not para_id or not parent_para_id:
+                continue
+            child_id = para_to_id.get(para_id)
+            parent_id = para_to_id.get(parent_para_id)
+            if child_id and parent_id and child_id not in parent_map:
+                parent_map[child_id] = parent_id
+
+    children = {cid: [] for cid in comments}
+    for child_id, parent_id in parent_map.items():
+        if child_id in comments and parent_id in comments:
+            children[parent_id].append(child_id)
+    for sibling_ids in children.values():
+        sibling_ids.sort(key=lambda cid: comments[cid]["order"])
+
+    return comments, parent_map, children
+
+
+def collect_anchors_from_xml(xml_path: Path):
+    _, root = read_xml(xml_path)
+    anchors = []
+    for elem in root.iter():
+        if local_name(elem.tag) == "commentRangeStart":
+            cid = get_attr_local(elem, "id")
+            if cid is not None:
+                anchors.append(cid)
+    return anchors
+
+
+def get_anchor_comment_ids(docx_dir: Path):
+    anchors = []
+    for xml_path in word_story_xml_candidates(docx_dir):
+        anchors.extend(collect_anchors_from_xml(xml_path))
+
+    seen = set()
+    ordered = []
+    for cid in anchors:
+        if cid not in seen:
+            seen.add(cid)
+            ordered.append(cid)
+    return ordered
+
+
+def thread_root(comment_id: str, comments, parent_map) -> str:
+    root_id = comment_id
+    seen = set()
+    while root_id in parent_map and root_id not in seen:
+        seen.add(root_id)
+        parent_id = parent_map[root_id]
+        if parent_id not in comments:
+            break
+        root_id = parent_id
+    return root_id
+
+
+def flatten_thread(anchor_id: str, comments, parent_map, children):
+    if anchor_id not in comments:
+        return anchor_id, ""
+
+    root_id = thread_root(anchor_id, comments, parent_map)
+    ordered_ids = []
+    seen_ids = set()
+
+    def walk(cid):
+        if cid in seen_ids:
+            return
+        seen_ids.add(cid)
+        ordered_ids.append(cid)
+        for child_id in children.get(cid, []):
+            walk(child_id)
+
+    walk(root_id)
+
+    if len(ordered_ids) == 1:
+        text = comments[root_id]["text"] or "(empty)"
+        return root_id, text
+
+    blocks = []
+    for cid in ordered_ids:
+        entry = comments[cid]
+        who = entry["author"] or "Unknown"
+        when = entry["date"]
+        head = f"{who} ({when})" if when else who
+        body = entry["text"] or "(empty)"
+        blocks.append(f"{head}: {body}")
+    return root_id, "\n\n".join(blocks)
+
+
+def make_comment_element(comment_id: str, author: str, date: str, text: str) -> ET.Element:
+    comment = ET.Element(f"{{{W_NS}}}comment")
+    comment.set(f"{{{W_NS}}}id", comment_id)
+    if author:
+        comment.set(f"{{{W_NS}}}author", author)
+    if date:
+        comment.set(f"{{{W_NS}}}date", date)
+    comment.set(f"{{{W_NS}}}initials", "DC")
+
+    lines = text.splitlines() if text else [""]
+    for line in lines:
+        p = ET.SubElement(comment, f"{{{W_NS}}}p")
+        r = ET.SubElement(p, f"{{{W_NS}}}r")
+        t = ET.SubElement(r, f"{{{W_NS}}}t")
+        if line[:1].isspace() or line[-1:].isspace():
+            t.set(f"{{{XML_NS}}}space", "preserve")
+        t.text = line
+    return comment
+
+
+def rewrite_comments_with_flattened_threads(docx_dir: Path):
+    comments_path = docx_dir / "word" / "comments.xml"
+    if not comments_path.exists() or not (docx_dir / "word" / "document.xml").exists():
+        return 0
+
+    comments, parent_map, children = parse_docx_comments(docx_dir)
+    if not comments:
+        return 0
+
+    anchors = get_anchor_comment_ids(docx_dir)
+    if not anchors:
+        return 0
+
+    new_root = ET.Element(f"{{{W_NS}}}comments")
+    count = 0
+
+    for anchor_id in anchors:
+        root_id, flat_text = flatten_thread(anchor_id, comments, parent_map, children)
+        meta = comments.get(root_id) or comments.get(anchor_id) or {}
+        author = meta.get("author", "")
+        date = meta.get("date", "")
+        if not flat_text:
+            flat_text = "(comment content unavailable)"
+        new_root.append(make_comment_element(anchor_id, author, date, flat_text))
+        count += 1
+
+    write_xml(ET.ElementTree(new_root), comments_path)
+
+    # Remove thread-specific extras so the temporary package is internally consistent.
+    for rel_path in [
+        "word/commentsExtended.xml",
+        "word/commentsIds.xml",
+        "word/people.xml",
+        "word/_rels/comments.xml.rels",
+    ]:
+        p = docx_dir / rel_path
+        if p.exists():
+            p.unlink()
+
+    return count
+
+
+def convert_docx_to_md(in_docx: Path, out_md: Path, pandoc_extra_args):
+    with tempfile.TemporaryDirectory(prefix=".docx-comments-", dir=temp_dir_root_for(in_docx)) as tmp:
+        tmp_dir = Path(tmp)
+        src_dir = tmp_dir / "src"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        media_dir = out_md.parent / "media"
+        media_before = list_files_relative(media_dir)
+
+        extract_docx(in_docx, src_dir)
+        _, parent_map, _ = parse_docx_comments(src_dir)
+
+        args = ["--track-changes=all"]
+        if pandoc_extra_args:
+            args.extend(pandoc_extra_args)
+        if not has_extract_media_arg(args):
+            args.append("--extract-media=.")
+        run_pandoc(
+            in_docx,
+            out_md,
+            fmt_to="markdown",
+            extra_args=args,
+            cwd=out_md.parent,
+        )
+        annotate_markdown_parent_attrs(out_md, parent_map)
+        text = out_md.read_text(encoding="utf-8")
+        text, _ = repair_unbalanced_comment_markers(text)
+        cleaned, _ = strip_placeholder_shape_images(text)
+        out_md.write_text(cleaned, encoding="utf-8")
+        prune_unreferenced_new_media(media_dir, media_before, cleaned)
+
+
+def convert_md_to_docx(in_md: Path, out_docx: Path, pandoc_extra_args):
+    with tempfile.TemporaryDirectory(prefix=".docx-comments-mdinput-", dir=temp_dir_root_for(in_md)) as tmp:
+        tmp_dir = Path(tmp)
+        sanitized_md = tmp_dir / "input.md"
+        text = in_md.read_text(encoding="utf-8")
+        text, _ = repair_unbalanced_comment_markers(text)
+        cleaned, _ = strip_placeholder_shape_images(text)
+        sanitized_md.write_text(cleaned, encoding="utf-8")
+
+        run_pandoc(
+            sanitized_md,
+            out_docx,
+            fmt_from="markdown",
+            extra_args=pandoc_extra_args,
+            cwd=in_md.parent,
+        )
+        comment_data = extract_comment_texts_from_markdown(sanitized_md, pandoc_extra_args)
+    if not comment_data or not comment_data.get("flattened_by_id"):
+        return
+
+    with tempfile.TemporaryDirectory(prefix=".docx-comments-md2docx-", dir=temp_dir_root_for(in_md)) as tmp:
+        tmp_dir = Path(tmp)
+        unpacked = tmp_dir / "docx"
+        unpacked.mkdir(parents=True, exist_ok=True)
+        extract_docx(out_docx, unpacked)
+        changed = rewrite_comment_bodies_from_markdown(
+            unpacked,
+            comment_data["flattened_by_id"],
+            comment_data["root_ids"],
+        )
+        pruned = prune_child_comment_artifacts(unpacked, comment_data["child_ids"])
+        if not changed and not pruned:
+            return
+        patched_docx = tmp_dir / "patched.docx"
+        pack_docx(unpacked, patched_docx)
+        shutil.copyfile(patched_docx, out_docx)
+
+
+def default_out_path(in_path: Path, suffix: str):
+    return in_path.with_suffix(suffix)
+
+
+def detect_mode_from_path(input_path: Path) -> str:
+    suffix = input_path.suffix.lower()
+    if suffix == ".docx":
+        return "docx2md"
+    if suffix in {".md", ".markdown", ".mdown", ".mkd"}:
+        return "md2docx"
+    raise ValueError(
+        f"Cannot infer conversion mode from '{input_path.name}'. "
+        "Use .docx, .md, .markdown, .mdown, or .mkd, or pass --mode explicitly."
+    )
+
+
+def normalize_argv(argv):
+    # Backward compatibility: docx-comments docx2md input.docx -o out.md
+    # becomes docx-comments --mode docx2md input.docx -o out.md
+    if argv and argv[0] in {"docx2md", "md2docx"}:
+        return ["--mode", argv[0], *argv[1:]]
+    return argv
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog=os.environ.get("DOCX_COMMENTS_PROG") or (Path(sys.argv[0]).name or "docx-comments"),
+        description=(
+            "Convert .docx <-> markdown while preserving comments. "
+            "Threaded Word comments are flattened into one comment body (with author/date lines)."
+        ),
+    )
+    parser.add_argument("input", type=Path, help="Input file (.docx or markdown)")
+    parser.add_argument("-o", "--output", type=Path, help="Output file path")
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "docx2md", "md2docx"],
+        default="auto",
+        help="Conversion mode; default auto infers from input extension",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args, pandoc_extra_args = parser.parse_known_args(normalize_argv(sys.argv[1:]))
+
+    try:
+        mode = args.mode
+        if mode == "auto":
+            mode = detect_mode_from_path(args.input)
+
+        if mode == "docx2md":
+            in_docx = args.input
+            out_md = args.output or default_out_path(in_docx, ".md")
+            convert_docx_to_md(in_docx, out_md, pandoc_extra_args)
+        elif mode == "md2docx":
+            in_md = args.input
+            out_docx = args.output or default_out_path(in_md, ".docx")
+            convert_md_to_docx(in_md, out_docx, pandoc_extra_args)
+        else:
+            parser.error(f"Unknown mode: {mode}")
+    except subprocess.CalledProcessError as exc:
+        print(f"pandoc failed (exit {exc.returncode}): {' '.join(exc.cmd)}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

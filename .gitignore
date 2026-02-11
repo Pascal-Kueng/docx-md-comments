@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak
