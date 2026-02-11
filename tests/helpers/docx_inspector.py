@@ -48,6 +48,7 @@ class DocxCommentSnapshot:
     range_start_count_by_id: dict[str, int]
     range_end_count_by_id: dict[str, int]
     reference_count_by_id: dict[str, int]
+    resolved_by_id: dict[str, bool]
     has_comments_extended: bool
     has_comments_ids: bool
 
@@ -67,6 +68,7 @@ class DocxCommentSnapshot:
             "range_start_count_by_id": self.range_start_count_by_id,
             "range_end_count_by_id": self.range_end_count_by_id,
             "reference_count_by_id": self.reference_count_by_id,
+            "resolved_by_id": self.resolved_by_id,
             "has_comments_extended": self.has_comments_extended,
             "has_comments_ids": self.has_comments_ids,
         }
@@ -108,6 +110,14 @@ def normalize_comment_text(text: str) -> str:
         if line:
             lines.append(line)
     return "\n".join(lines).strip()
+
+
+def normalize_anchor_text(text: str) -> str:
+    # Anchor extraction across run/paragraph boundaries can vary in whether
+    # boundary whitespace is represented, while still preserving the same span.
+    # Compare anchors whitespace-insensitively to avoid false positives.
+    normalized = normalize_comment_text(text)
+    return re.sub(r"\s+", "", normalized)
 
 
 def extract_comment_text(comment_elem: ET.Element) -> str:
@@ -160,6 +170,7 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
     comment_ids_order: list[str] = []
     parent_map: dict[str, str] = {}
     para_to_id: dict[str, str] = {}
+    resolved_by_id: dict[str, bool] = {}
 
     with zipfile.ZipFile(docx_path, "r") as zip_file:
         names = set(zip_file.namelist())
@@ -181,12 +192,25 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
                     parent_id=get_attr_local(comment, "parentId") or "",
                     para_id=get_attr_local(comment, "paraId") or "",
                 )
+                if not node.para_id:
+                    first_p = comment.find(f".//{{{W_NS}}}p")
+                    if first_p is not None:
+                        node = CommentNode(
+                            id=node.id,
+                            author=node.author,
+                            date=node.date,
+                            text=node.text,
+                            order=node.order,
+                            parent_id=node.parent_id,
+                            para_id=get_attr_local(first_p, "paraId") or "",
+                        )
                 comments_by_id[cid] = node
                 comment_ids_order.append(cid)
                 if node.parent_id:
                     parent_map[cid] = node.parent_id
                 if node.para_id:
                     para_to_id[node.para_id] = cid
+                resolved_by_id[cid] = False
 
         if has_comments_ids and comment_ids_order:
             ids_root = ET.fromstring(zip_file.read("word/commentsIds.xml"))
@@ -209,8 +233,11 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
                     continue
                 child_para = get_attr_local(elem, "paraId")
                 parent_para = get_attr_local(elem, "paraIdParent")
+                done = get_attr_local(elem, "done")
                 child_id = para_to_id.get(child_para or "")
                 parent_id = para_to_id.get(parent_para or "")
+                if child_id:
+                    resolved_by_id[child_id] = str(done or "").strip() == "1"
                 if child_id and parent_id and child_id not in parent_map:
                     parent_map[child_id] = parent_id
 
@@ -290,6 +317,7 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
         range_start_count_by_id=range_start_count_by_id,
         range_end_count_by_id=range_end_count_by_id,
         reference_count_by_id=reference_count_by_id,
+        resolved_by_id=resolved_by_id,
         has_comments_extended=has_comments_extended,
         has_comments_ids=has_comments_ids,
     )

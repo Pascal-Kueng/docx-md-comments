@@ -11,6 +11,7 @@ from tests.helpers.diagnostics import text_diff, write_failure_bundle
 from tests.helpers.docx_inspector import (
     build_flatten_expectation,
     inspect_docx,
+    normalize_anchor_text,
     normalize_comment_text,
 )
 from tests.helpers.markdown_inspector import inspect_markdown_comments
@@ -119,6 +120,20 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
 
         if len(markdown.start_ids_order) != len(markdown_start_set):
             errors.append("Markdown comment-start IDs are not unique.")
+        invalid_markdown_state_ids = sorted(
+            [cid for cid in markdown.start_ids_order if markdown.state_by_id.get(cid) not in {"active", "resolved"}],
+            key=lambda value: (len(value), value),
+        )
+        if invalid_markdown_state_ids:
+            errors.append(f"Markdown has invalid state values for comment-start IDs: {invalid_markdown_state_ids}")
+
+        for cid in sorted(markdown_start_set.intersection(original_anchor_set), key=lambda value: (len(value), value)):
+            expected_state = "resolved" if original.resolved_by_id.get(cid, False) else "active"
+            actual_state = markdown.state_by_id.get(cid, "active")
+            if actual_state != expected_state:
+                errors.append(
+                    f"Markdown state mismatch for comment {cid}: expected={expected_state} actual={actual_state}"
+                )
 
         original_child_set = set(expected_from_original.child_ids)
         for label, values in [
@@ -167,10 +182,17 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
             if expected_norm != actual_norm:
                 errors.append(f"Flattened text mismatch for root comment {root_id}")
                 text_mismatch_diffs[root_id] = text_diff(expected_text, actual_node.text, f"comment {root_id}")
+            expected_state = bool(original.resolved_by_id.get(root_id, False))
+            actual_state = bool(roundtrip.resolved_by_id.get(root_id, False))
+            if expected_state != actual_state:
+                errors.append(
+                    f"Roundtrip resolved-state mismatch for root comment {root_id}: "
+                    f"expected={expected_state} actual={actual_state}"
+                )
 
         for root_id in expected_from_original.root_ids_order:
-            expected_anchor_text = normalize_comment_text(original.anchor_text_by_id.get(root_id, ""))
-            actual_anchor_text = normalize_comment_text(roundtrip.anchor_text_by_id.get(root_id, ""))
+            expected_anchor_text = normalize_anchor_text(original.anchor_text_by_id.get(root_id, ""))
+            actual_anchor_text = normalize_anchor_text(roundtrip.anchor_text_by_id.get(root_id, ""))
             if expected_anchor_text != actual_anchor_text:
                 errors.append(f"Anchor span text mismatch for root comment {root_id}")
                 text_mismatch_diffs[f"anchor_{root_id}"] = text_diff(
@@ -193,8 +215,8 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
             if unexpected:
                 errors.append(f"Roundtrip has unexpected {label} IDs not in comments.xml: {unexpected}")
 
-        if roundtrip.has_comments_extended:
-            errors.append("Roundtrip still contains word/commentsExtended.xml")
+        if not roundtrip.has_comments_extended:
+            errors.append("Roundtrip missing word/commentsExtended.xml needed for resolved-state preservation")
         if roundtrip.has_comments_ids:
             errors.append("Roundtrip still contains word/commentsIds.xml")
 

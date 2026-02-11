@@ -22,6 +22,7 @@ class MarkdownCommentStart:
     author: str
     date: str
     parent: str
+    state: str
 
     def to_dict(self) -> dict:
         return {
@@ -31,6 +32,7 @@ class MarkdownCommentStart:
             "author": self.author,
             "date": self.date,
             "parent": self.parent,
+            "state": self.state,
         }
 
 
@@ -45,6 +47,7 @@ class MarkdownCommentSnapshot:
     root_ids_order: list[str]
     own_text_by_id: dict[str, str]
     flattened_by_root: dict[str, str]
+    state_by_id: dict[str, str]
     placeholder_shape_match_count: int
     none_line_count: int
 
@@ -59,6 +62,7 @@ class MarkdownCommentSnapshot:
             "root_ids_order": self.root_ids_order,
             "own_text_by_id": self.own_text_by_id,
             "flattened_by_root": self.flattened_by_root,
+            "state_by_id": self.state_by_id,
             "placeholder_shape_match_count": self.placeholder_shape_match_count,
             "none_line_count": self.none_line_count,
         }
@@ -141,6 +145,10 @@ def reply_header(author: str, date: str) -> str:
     return f"---\nReply from: {safe_author}\n---"
 
 
+def normalize_state_token(value: str) -> str:
+    return "resolved" if (value or "").strip().lower() == "resolved" else "active"
+
+
 def run_pandoc_json(markdown_path: Path) -> dict:
     cmd = ["pandoc", str(markdown_path), "-f", "markdown", "-t", "json"]
     out = subprocess.check_output(cmd, text=True)
@@ -156,11 +164,13 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
     own_text_by_id: dict[str, str] = {}
     metadata_by_id: dict[str, dict[str, str]] = {}
     parent_candidate_by_id: dict[str, str] = {}
+    state_by_id: dict[str, str] = {}
     start_order = 0
 
     def ensure_id(comment_id: str) -> None:
         own_text_by_id.setdefault(comment_id, "")
         metadata_by_id.setdefault(comment_id, {})
+        state_by_id.setdefault(comment_id, "active")
 
     def parse_attr(attr):
         if not (isinstance(attr, list) and len(attr) == 3):
@@ -192,12 +202,15 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
         author = (meta.get("author") or "").strip()
         date = (meta.get("date") or "").strip()
         parent = (meta.get("parent") or "").strip()
+        state = normalize_state_token(meta.get("state") or "")
         if author and not metadata_by_id[comment_id].get("author"):
             metadata_by_id[comment_id]["author"] = author
         if date and not metadata_by_id[comment_id].get("date"):
             metadata_by_id[comment_id]["date"] = date
         if parent:
             parent_candidate_by_id[comment_id] = parent
+        if "state" in meta:
+            state_by_id[comment_id] = state
         starts.append(
             MarkdownCommentStart(
                 id=comment_id,
@@ -206,6 +219,7 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
                 author=author,
                 date=date,
                 parent=parent,
+                state=state,
             )
         )
         start_order += 1
@@ -318,6 +332,9 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
     for root_id in root_ids_order:
         flattened_by_root[root_id] = flatten(root_id, set())
 
+    for cid in start_ids_order:
+        state_by_id[cid] = normalize_state_token(state_by_id.get(cid, "active"))
+
     markdown_text = markdown_path.read_text(encoding="utf-8")
     placeholder_shape_match_count = 0
     for match in INLINE_IMAGE_RE.finditer(markdown_text):
@@ -337,6 +354,7 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
         root_ids_order=root_ids_order,
         own_text_by_id=own_text_by_id,
         flattened_by_root=flattened_by_root,
+        state_by_id=state_by_id,
         placeholder_shape_match_count=placeholder_shape_match_count,
         none_line_count=none_line_count,
     )

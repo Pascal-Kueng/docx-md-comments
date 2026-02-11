@@ -13,16 +13,29 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import zlib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+W14_NS = "http://schemas.microsoft.com/office/word/2010/wordml"
 W15_NS = "http://schemas.microsoft.com/office/word/2012/wordml"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
+PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+PKG_CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
+COMMENTS_EXT_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+COMMENTS_EXT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
+COMMENTS_EXT_PART_NAME = "/word/commentsExtended.xml"
 
 ET.register_namespace("w", W_NS)
+ET.register_namespace("w14", W14_NS)
+ET.register_namespace("w15", W15_NS)
 COMMENT_START_ATTR_BLOCK_RE = re.compile(r"\{\.comment-start(?P<attrs>[^}]*)\}", re.DOTALL)
 COMMENT_END_ATTR_BLOCK_RE = re.compile(r"\{\.comment-end(?P<attrs>[^}]*)\}", re.DOTALL)
+NESTED_COMMENT_END_WRAPPER_RE = re.compile(
+    r"\[(?P<inner>(?:\s*\[\]\{\.comment-end[^}]*\}\s*)+)\]\{\.comment-end(?P<attrs>[^}]*)\}",
+    re.DOTALL,
+)
 KV_ATTR_RE = re.compile(r'([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"')
 INLINE_IMAGE_RE = re.compile(
     r'!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)(?:\s+"(?P<title>[^"]*)")?\)\{(?P<attrs>[^}]*)\}',
@@ -86,8 +99,15 @@ def temp_dir_root_for(path: Path):
     return None
 
 
-def annotate_markdown_parent_attrs(md_path: Path, parent_map):
-    if not parent_map:
+def parse_state_token(state_value):
+    token = str(state_value or "").strip().lower()
+    if token == "resolved":
+        return "resolved"
+    return "active"
+
+
+def annotate_markdown_comment_attrs(md_path: Path, parent_map, state_by_id):
+    if not parent_map and not state_by_id:
         return 0
     text = md_path.read_text(encoding="utf-8")
     changed = 0
@@ -99,13 +119,19 @@ def annotate_markdown_parent_attrs(md_path: Path, parent_map):
         cid = kv.get("id")
         if not cid:
             return match.group(0)
+        additions = []
         pid = parent_map.get(cid)
-        if not pid:
-            return match.group(0)
-        if kv.get("parent"):
+        if pid and not kv.get("parent"):
+            additions.append(f' parent="{pid}"')
+
+        if not kv.get("state"):
+            state_token = parse_state_token((state_by_id or {}).get(cid))
+            additions.append(f' state="{state_token}"')
+
+        if not additions:
             return match.group(0)
         changed += 1
-        return "{.comment-start" + attrs + f' parent="{pid}"' + "}"
+        return "{.comment-start" + attrs + "".join(additions) + "}"
 
     updated = COMMENT_START_ATTR_BLOCK_RE.sub(repl, text)
     if changed:
@@ -173,6 +199,24 @@ def repair_unbalanced_comment_markers(markdown_text: str):
         updated = updated[:pos] + token + updated[pos:]
 
     return updated, len(insertions)
+
+
+def normalize_nested_comment_end_markers(markdown_text: str):
+    # Pandoc can emit nested wrappers like:
+    # [[]{.comment-end id="a"}]{.comment-end id="b"}
+    # or [[]{.comment-end id="a"}[]{.comment-end id="b"}]{.comment-end id="c"}
+    # Flatten these to sibling markers so md->docx preserves all ends/references.
+    updated = markdown_text
+    changed = 0
+    while True:
+        updated, count = NESTED_COMMENT_END_WRAPPER_RE.subn(
+            lambda m: f"{m.group('inner')}[]{{.comment-end{m.group('attrs')}}}",
+            updated,
+        )
+        if not count:
+            break
+        changed += count
+    return updated, changed
 
 
 def normalize_markdown_comment_text(text: str) -> str:
@@ -395,6 +439,7 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args):
     children_by_id = {}
     meta_by_id = {}
     parent_by_id = {}
+    state_by_id = {}
     seen_order = []
     started_ids = set()
 
@@ -405,6 +450,8 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args):
             own_text_by_id[comment_id] = ""
         if comment_id not in meta_by_id:
             meta_by_id[comment_id] = {}
+        if comment_id not in state_by_id:
+            state_by_id[comment_id] = "active"
         if comment_id not in seen_order:
             seen_order.append(comment_id)
 
@@ -432,6 +479,8 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args):
             parent_id = (meta.get("parent") or "").strip()
             if parent_id:
                 parent_by_id[comment_id] = parent_id
+            if "state" in meta:
+                state_by_id[comment_id] = parse_state_token(meta.get("state"))
 
     def parse_span_meta(attr):
         if not (isinstance(attr, list) and len(attr) == 3):
@@ -444,7 +493,7 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args):
             for item in kvs:
                 if isinstance(item, list) and len(item) == 2:
                     key, value = item
-                    if key in {"author", "date", "parent"}:
+                    if key in {"author", "date", "parent", "state"}:
                         meta[key] = value
         return identifier, classes, meta
 
@@ -590,11 +639,15 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args):
     if not root_ids:
         root_ids = list(ordered_started_ids)
 
+    for cid in ordered_started_ids:
+        state_by_id[cid] = parse_state_token(state_by_id.get(cid))
+
     return {
         "flattened_by_id": flattened_by_id,
         "parent_by_id": valid_parent_by_id,
         "child_ids": child_ids,
         "root_ids": root_ids,
+        "state_by_id": state_by_id,
     }
 
 
@@ -652,6 +705,149 @@ def rewrite_comment_bodies_from_markdown(docx_dir: Path, comment_text_by_id, roo
     if changed:
         write_xml(tree, comments_path)
     return changed
+
+
+def generate_unique_para_id(seed: str, used_para_ids):
+    counter = 0
+    while True:
+        candidate = f"{zlib.crc32(f'{seed}:{counter}'.encode('utf-8')) & 0xFFFFFFFF:08X}"
+        if candidate != "00000000" and candidate not in used_para_ids:
+            used_para_ids.add(candidate)
+            return candidate
+        counter += 1
+
+
+def ensure_comments_extended_relationship(docx_dir: Path):
+    rels_path = docx_dir / "word" / "_rels" / "document.xml.rels"
+    if not rels_path.exists():
+        return False
+
+    tree, root = read_xml(rels_path)
+    changed = False
+    max_rid = 0
+    has_ext_rel = False
+
+    for rel in root:
+        if local_name(rel.tag) != "Relationship":
+            continue
+        rid = rel.attrib.get("Id", "")
+        m = re.match(r"^rId([0-9]+)$", rid)
+        if m:
+            max_rid = max(max_rid, int(m.group(1)))
+        rel_type = rel.attrib.get("Type", "")
+        target = rel.attrib.get("Target", "")
+        if rel_type == COMMENTS_EXT_REL_TYPE:
+            has_ext_rel = True
+            if target != "commentsExtended.xml":
+                rel.attrib["Target"] = "commentsExtended.xml"
+                changed = True
+
+    if not has_ext_rel:
+        rel_ns = root.tag.split("}", 1)[0][1:] if root.tag.startswith("{") else PKG_REL_NS
+        rel = ET.SubElement(root, f"{{{rel_ns}}}Relationship")
+        rel.set("Id", f"rId{max_rid + 1}")
+        rel.set("Type", COMMENTS_EXT_REL_TYPE)
+        rel.set("Target", "commentsExtended.xml")
+        changed = True
+
+    if changed:
+        write_xml(tree, rels_path)
+    return changed
+
+
+def ensure_comments_extended_content_type(docx_dir: Path):
+    content_types_path = docx_dir / "[Content_Types].xml"
+    if not content_types_path.exists():
+        return False
+
+    tree, root = read_xml(content_types_path)
+    changed = False
+    has_override = False
+    ct_ns = root.tag.split("}", 1)[0][1:] if root.tag.startswith("{") else PKG_CT_NS
+
+    for elem in root:
+        if local_name(elem.tag) != "Override":
+            continue
+        part_name = elem.attrib.get("PartName", "")
+        if part_name == COMMENTS_EXT_PART_NAME:
+            has_override = True
+            if elem.attrib.get("ContentType", "") != COMMENTS_EXT_CONTENT_TYPE:
+                elem.attrib["ContentType"] = COMMENTS_EXT_CONTENT_TYPE
+                changed = True
+            break
+
+    if not has_override:
+        override = ET.SubElement(root, f"{{{ct_ns}}}Override")
+        override.set("PartName", COMMENTS_EXT_PART_NAME)
+        override.set("ContentType", COMMENTS_EXT_CONTENT_TYPE)
+        changed = True
+
+    if changed:
+        write_xml(tree, content_types_path)
+    return changed
+
+
+def rewrite_root_comments_extended_state(docx_dir: Path, root_ids, state_by_id):
+    comments_path = docx_dir / "word" / "comments.xml"
+    if not comments_path.exists() or not root_ids:
+        return 0
+
+    tree, root = read_xml(comments_path)
+    root_set = {str(cid) for cid in root_ids}
+    root_para_ids = {}
+    root_order = []
+    changed_comments_xml = False
+
+    used_para_ids = set()
+    for comment in root.findall(f".//{{{W_NS}}}comment"):
+        para_id = get_attr_local(comment, "paraId")
+        if para_id:
+            used_para_ids.add(para_id)
+        first_p = comment.find(f".//{{{W_NS}}}p")
+        if first_p is not None:
+            p_para_id = get_attr_local(first_p, "paraId")
+            if p_para_id:
+                used_para_ids.add(p_para_id)
+
+    for comment in root.findall(f".//{{{W_NS}}}comment"):
+        cid = get_attr_local(comment, "id")
+        if cid is None or cid not in root_set:
+            continue
+        first_p = comment.find(f".//{{{W_NS}}}p")
+        if first_p is None:
+            first_p = ET.SubElement(comment, f"{{{W_NS}}}p")
+            changed_comments_xml = True
+
+        para_id = get_attr_local(first_p, "paraId") or get_attr_local(comment, "paraId")
+        if not para_id:
+            para_id = generate_unique_para_id(f"comment-{cid}", used_para_ids)
+            first_p.set(f"{{{W14_NS}}}paraId", para_id)
+            changed_comments_xml = True
+        root_para_ids[cid] = para_id
+        root_order.append(cid)
+
+    if changed_comments_xml:
+        write_xml(tree, comments_path)
+
+    if not root_order:
+        return 0
+
+    comments_ext_root = ET.Element(f"{{{W15_NS}}}commentsEx")
+    for cid in root_order:
+        para_id = root_para_ids.get(cid)
+        if not para_id:
+            continue
+        state_token = parse_state_token((state_by_id or {}).get(cid))
+        entry = ET.SubElement(comments_ext_root, f"{{{W15_NS}}}commentEx")
+        entry.set(f"{{{W15_NS}}}paraId", para_id)
+        entry.set(f"{{{W15_NS}}}done", "1" if state_token == "resolved" else "0")
+
+    comments_ext_path = docx_dir / "word" / "commentsExtended.xml"
+    write_xml(ET.ElementTree(comments_ext_root), comments_ext_path)
+
+    rel_changed = ensure_comments_extended_relationship(docx_dir)
+    ct_changed = ensure_comments_extended_content_type(docx_dir)
+    return 1 if (changed_comments_xml or rel_changed or ct_changed or root_order) else 0
 
 
 def word_story_xml_candidates(docx_dir: Path):
@@ -782,6 +978,7 @@ def parse_docx_comments(docx_dir: Path):
     parent_map = {}
     para_to_id = {}
     ordered_comment_ids = []
+    resolved_by_id = {}
 
     if comments_path.exists():
         _, root = read_xml(comments_path)
@@ -793,17 +990,24 @@ def parse_docx_comments(docx_dir: Path):
             date = get_attr_local(comment, "date") or ""
             text = extract_comment_text(comment)
             para_id = get_attr_local(comment, "paraId")
+            if not para_id:
+                first_p = comment.find(f".//{{{W_NS}}}p")
+                if first_p is not None:
+                    para_id = get_attr_local(first_p, "paraId")
             parent = get_attr_local(comment, "parentId")
             if para_id:
                 para_to_id[para_id] = cid
             if parent:
                 parent_map[cid] = parent
             ordered_comment_ids.append(cid)
+            resolved_by_id[cid] = False
             comments[cid] = {
                 "author": author,
                 "date": date,
                 "text": text,
                 "order": idx,
+                "para_id": para_id or "",
+                "resolved": False,
             }
 
     # Some Word versions store paraId only in commentsIds.xml.
@@ -821,6 +1025,8 @@ def parse_docx_comments(docx_dir: Path):
             for comment_id, para_id in zip(ordered_comment_ids, para_ids_in_order):
                 if para_id and para_id not in para_to_id:
                     para_to_id[para_id] = comment_id
+                if para_id and comment_id in comments and not comments[comment_id].get("para_id"):
+                    comments[comment_id]["para_id"] = para_id
 
     if comments_ext_path.exists() and para_to_id:
         _, root = read_xml(comments_ext_path)
@@ -829,9 +1035,15 @@ def parse_docx_comments(docx_dir: Path):
                 continue
             para_id = get_attr_local(elem, "paraId")
             parent_para_id = get_attr_local(elem, "paraIdParent")
+            done = get_attr_local(elem, "done")
+            child_id = para_to_id.get(para_id) if para_id else None
+            if child_id:
+                is_resolved = str(done or "").strip() == "1"
+                resolved_by_id[child_id] = is_resolved
+                if child_id in comments:
+                    comments[child_id]["resolved"] = is_resolved
             if not para_id or not parent_para_id:
                 continue
-            child_id = para_to_id.get(para_id)
             parent_id = para_to_id.get(parent_para_id)
             if child_id and parent_id and child_id not in parent_map:
                 parent_map[child_id] = parent_id
@@ -842,6 +1054,9 @@ def parse_docx_comments(docx_dir: Path):
             children[parent_id].append(child_id)
     for sibling_ids in children.values():
         sibling_ids.sort(key=lambda cid: comments[cid]["order"])
+
+    for cid in comments:
+        comments[cid]["resolved"] = bool(resolved_by_id.get(cid, False))
 
     return comments, parent_map, children
 
@@ -988,7 +1203,10 @@ def convert_docx_to_md(in_docx: Path, out_md: Path, pandoc_extra_args):
         media_before = list_files_relative(media_dir)
 
         extract_docx(in_docx, src_dir)
-        _, parent_map, _ = parse_docx_comments(src_dir)
+        comments, parent_map, _ = parse_docx_comments(src_dir)
+        state_by_id = {}
+        for cid, meta in comments.items():
+            state_by_id[cid] = "resolved" if meta.get("resolved") else "active"
 
         args = ["--track-changes=all"]
         if pandoc_extra_args:
@@ -1002,9 +1220,10 @@ def convert_docx_to_md(in_docx: Path, out_md: Path, pandoc_extra_args):
             extra_args=args,
             cwd=out_md.parent,
         )
-        annotate_markdown_parent_attrs(out_md, parent_map)
+        annotate_markdown_comment_attrs(out_md, parent_map, state_by_id)
         text = out_md.read_text(encoding="utf-8")
         text, _ = repair_unbalanced_comment_markers(text)
+        text, _ = normalize_nested_comment_end_markers(text)
         cleaned, _ = strip_placeholder_shape_images(text)
         out_md.write_text(cleaned, encoding="utf-8")
         prune_unreferenced_new_media(media_dir, media_before, cleaned)
@@ -1016,6 +1235,7 @@ def convert_md_to_docx(in_md: Path, out_docx: Path, pandoc_extra_args):
         sanitized_md = tmp_dir / "input.md"
         text = in_md.read_text(encoding="utf-8")
         text, _ = repair_unbalanced_comment_markers(text)
+        text, _ = normalize_nested_comment_end_markers(text)
         cleaned, _ = strip_placeholder_shape_images(text)
         sanitized_md.write_text(cleaned, encoding="utf-8")
 
@@ -1041,7 +1261,12 @@ def convert_md_to_docx(in_md: Path, out_docx: Path, pandoc_extra_args):
             comment_data["root_ids"],
         )
         pruned = prune_child_comment_artifacts(unpacked, comment_data["child_ids"])
-        if not changed and not pruned:
+        state_updated = rewrite_root_comments_extended_state(
+            unpacked,
+            comment_data["root_ids"],
+            comment_data.get("state_by_id", {}),
+        )
+        if not changed and not pruned and not state_updated:
             return
         patched_docx = tmp_dir / "patched.docx"
         pack_docx(unpacked, patched_docx)

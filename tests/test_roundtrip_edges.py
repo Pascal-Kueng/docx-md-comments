@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.helpers.diagnostics import text_diff, write_failure_bundle
-from tests.helpers.docx_inspector import inspect_docx, normalize_comment_text
+from tests.helpers.docx_inspector import inspect_docx, normalize_anchor_text, normalize_comment_text
 from tests.helpers.markdown_inspector import inspect_markdown_comments
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +29,7 @@ EDGE_CASES = [
     {
         "name": "heading_start_single_comment",
         "expected_root_ids": ["1", "2"],
+        "expected_state_by_root": {"1": "active", "2": "active"},
         "markdown": (
             '# [Title]{.comment-start id="1" author="A" date="2026-01-01T00:00:00Z"}'
             ' Heading[]{.comment-end id="1"}\n\n'
@@ -39,6 +40,7 @@ EDGE_CASES = [
     {
         "name": "nested_replies",
         "expected_root_ids": ["10"],
+        "expected_state_by_root": {"10": "active"},
         "markdown": (
             "Paragraph with [root note]{.comment-start id=\"10\" author=\"Root\" date=\"2026-01-01T00:00:00Z\"}"
             "[first child]{.comment-start id=\"11\" author=\"R1\" date=\"2026-01-01T00:10:00Z\" parent=\"10\"}"
@@ -52,10 +54,51 @@ EDGE_CASES = [
     {
         "name": "interleaved_root_comments",
         "expected_root_ids": ["20", "21"],
+        "expected_state_by_root": {"20": "active", "21": "active"},
         "markdown": (
             "Start [A]{.comment-start id=\"20\" author=\"A\" date=\"2026-01-02T00:00:00Z\"}"
             " mid [B]{.comment-start id=\"21\" author=\"B\" date=\"2026-01-02T00:01:00Z\"}"
             " inner[]{.comment-end id=\"20\"} tail[]{.comment-end id=\"21\"}.\n"
+        ),
+    },
+    {
+        "name": "nested_end_wrapper_with_multiple_inner_markers",
+        "expected_root_ids": ["0", "1", "2"],
+        "expected_state_by_root": {"0": "active", "1": "active", "2": "active"},
+        "markdown": (
+            '# [A]{.comment-start id="0" author="A" date="2026-01-03T00:00:00Z"}'
+            '[reply]{.comment-start id="1" author="B" date="2026-01-03T00:01:00Z"}'
+            '[B]{.comment-start id="2" author="C" date="2026-01-03T00:02:00Z"}'
+            'x[[]{.comment-end id="1"}[]{.comment-end id="0"}]{.comment-end id="2"}\n'
+        ),
+    },
+    {
+        "name": "resolved_root_comment",
+        "expected_root_ids": ["70"],
+        "expected_state_by_root": {"70": "resolved"},
+        "markdown": (
+            "Root [resolved]{.comment-start id=\"70\" author=\"A\" date=\"2026-01-04T00:00:00Z\" state=\"resolved\"}"
+            " mark[]{.comment-end id=\"70\"}.\n"
+        ),
+    },
+    {
+        "name": "mixed_root_states",
+        "expected_root_ids": ["71", "72"],
+        "expected_state_by_root": {"71": "resolved", "72": "active"},
+        "markdown": (
+            "A [resolved]{.comment-start id=\"71\" author=\"A\" date=\"2026-01-05T00:00:00Z\" state=\"resolved\"}"
+            " span[]{.comment-end id=\"71\"} and "
+            "[active]{.comment-start id=\"72\" author=\"B\" date=\"2026-01-05T00:01:00Z\" state=\"active\"}"
+            " span[]{.comment-end id=\"72\"}.\n"
+        ),
+    },
+    {
+        "name": "invalid_state_defaults_active",
+        "expected_root_ids": ["73"],
+        "expected_state_by_root": {"73": "active"},
+        "markdown": (
+            "Root [invalid]{.comment-start id=\"73\" author=\"A\" date=\"2026-01-06T00:00:00Z\" state=\"banana\"}"
+            " span[]{.comment-end id=\"73\"}.\n"
         ),
     },
 ]
@@ -107,11 +150,23 @@ class TestEdgeRoundtrips(unittest.TestCase):
         text_mismatch_diffs: dict[str, str] = {}
 
         expected_root_ids = case["expected_root_ids"]
+        expected_state_by_root = case.get("expected_state_by_root") or {
+            cid: "active" for cid in expected_root_ids
+        }
         if seed_snapshot.comment_ids_order != expected_root_ids:
             errors.append(
                 f"Unexpected seed root IDs for case {case['name']}. "
                 f"expected={expected_root_ids} actual={seed_snapshot.comment_ids_order}"
             )
+
+        for comment_id in expected_root_ids:
+            expected_state = expected_state_by_root.get(comment_id, "active") == "resolved"
+            actual_state = bool(seed_snapshot.resolved_by_id.get(comment_id, False))
+            if expected_state != actual_state:
+                errors.append(
+                    f"Unexpected seed resolved-state for id={comment_id}. "
+                    f"expected={expected_state} actual={actual_state}"
+                )
 
         if roundtrip_snapshot.comment_ids_order != seed_snapshot.comment_ids_order:
             errors.append(
@@ -134,6 +189,20 @@ class TestEdgeRoundtrips(unittest.TestCase):
             errors.append(f"Markdown has unexpected comment-start IDs not in seed anchors: {unexpected_markdown_starts}")
         if len(middle_snapshot.start_ids_order) != len(middle_start_set):
             errors.append("Markdown comment-start IDs are not unique.")
+        invalid_state_ids = sorted(
+            [cid for cid in middle_snapshot.start_ids_order if middle_snapshot.state_by_id.get(cid) not in {"active", "resolved"}],
+            key=lambda value: (len(value), value),
+        )
+        if invalid_state_ids:
+            errors.append(f"Markdown has invalid state values for comment-start IDs: {invalid_state_ids}")
+        for comment_id in middle_snapshot.start_ids_order:
+            expected_state = "resolved" if seed_snapshot.resolved_by_id.get(comment_id, False) else "active"
+            actual_state = middle_snapshot.state_by_id.get(comment_id, "active")
+            if expected_state != actual_state:
+                errors.append(
+                    f"Markdown state mismatch for id={comment_id}. "
+                    f"expected={expected_state} actual={actual_state}"
+                )
 
         roundtrip_id_set = set(roundtrip_snapshot.comment_ids_order)
         for label, observed_ids in [
@@ -176,8 +245,8 @@ class TestEdgeRoundtrips(unittest.TestCase):
                 )
 
         for comment_id in seed_snapshot.comment_ids_order:
-            expected_anchor_text = normalize_comment_text(seed_snapshot.anchor_text_by_id.get(comment_id, ""))
-            actual_anchor_text = normalize_comment_text(roundtrip_snapshot.anchor_text_by_id.get(comment_id, ""))
+            expected_anchor_text = normalize_anchor_text(seed_snapshot.anchor_text_by_id.get(comment_id, ""))
+            actual_anchor_text = normalize_anchor_text(roundtrip_snapshot.anchor_text_by_id.get(comment_id, ""))
             if expected_anchor_text != actual_anchor_text:
                 errors.append(f"Anchor span text drift for id={comment_id}")
                 text_mismatch_diffs[f"anchor_{comment_id}"] = text_diff(
@@ -186,10 +255,19 @@ class TestEdgeRoundtrips(unittest.TestCase):
                     f"{case['name']}:anchor:{comment_id}",
                 )
 
-        if roundtrip_snapshot.has_comments_extended:
-            errors.append("Roundtrip contains word/commentsExtended.xml")
+        if not roundtrip_snapshot.has_comments_extended:
+            errors.append("Roundtrip missing word/commentsExtended.xml for resolved-state preservation")
         if roundtrip_snapshot.has_comments_ids:
             errors.append("Roundtrip contains word/commentsIds.xml")
+
+        for comment_id in seed_snapshot.comment_ids_order:
+            expected_state = bool(seed_snapshot.resolved_by_id.get(comment_id, False))
+            actual_state = bool(roundtrip_snapshot.resolved_by_id.get(comment_id, False))
+            if expected_state != actual_state:
+                errors.append(
+                    f"Roundtrip resolved-state drift for id={comment_id}. "
+                    f"expected={expected_state} actual={actual_state}"
+                )
 
         if errors:
             failure_bundle = write_failure_bundle(
