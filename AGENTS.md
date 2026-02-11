@@ -13,6 +13,7 @@ Core requirements:
 - Flatten threaded replies into root comment bodies in Word output.
 - Preserve root comment state (`active` vs `resolved`).
 - Avoid duplicate standalone reply comments after flattening.
+- Match Microsoft Word behavior (OnlyOffice parity is useful but not sufficient).
 
 ## Repository map
 
@@ -31,7 +32,9 @@ Core requirements:
 
 - `word/comments.xml`: primary comment nodes and text.
 - `word/commentsExtended.xml`: thread links and resolved state (`w15:done`).
-- `word/commentsIds.xml`: optional helper mapping (order/para IDs in some files).
+- `word/commentsIds.xml`: mapping between thread para IDs and durable IDs.
+- `word/commentsExtensible.xml`: durable ID extension entries (with `dateUtc`).
+- `word/people.xml`: author records and `presenceInfo`.
 - Story XMLs (`document.xml`, headers, footers, footnotes, endnotes): anchors/references.
 
 ### Markdown span contract
@@ -40,6 +43,10 @@ Expected span metadata:
 
 - `.comment-start`: `id`, optional `author`, `date`, `parent`, `state`.
 - `.comment-end`: `id`.
+
+Internal transport metadata (docx->md->docx only; must be stripped before pandoc md->docx):
+
+- `.comment-start`: `paraId`, `durableId`, `presenceProvider`, `presenceUserId`.
 
 `state` must normalize to:
 
@@ -55,7 +62,9 @@ Expected span metadata:
 5. Anchor span text for roots remains equivalent (normalized comparison).
 6. `commentsExtended.xml` exists in roundtrip output and root states are preserved.
 7. `commentsIds.xml` does not reintroduce orphaned child thread artifacts.
-8. Placeholder shape image markdown artifacts are removed.
+8. `commentsExtensible.xml` and `people.xml` are present when needed for state fidelity in Word.
+9. For multi-paragraph comments, roundtrip thread `paraId` equals the last comment paragraph `paraId`.
+10. Placeholder shape image markdown artifacts are removed.
 
 ## High-risk areas and regressions to avoid
 
@@ -83,6 +92,19 @@ Do not reintroduce these failure patterns:
 - Comments that start at first document character/heading must survive.
 - This is a known fragile area and must always be covered by tests.
 
+6. Wrong thread paraId selection for multi-paragraph comments.
+- Word binds `commentsExtended/commentsIds` to the thread paraId.
+- In multi-paragraph comments this is the last paragraph `w14:paraId`, not the first.
+- Using the first paragraph paraId leads to partial "resolved" restoration in Word.
+
+7. Dropping `people.xml` presence metadata.
+- Preserve `w15:presenceInfo` (`providerId`, `userId`) per author when present in source.
+- Missing presence metadata can cause Word UI/status behavior drift despite seemingly correct XML counts.
+
+8. Trusting non-Word viewers as source of truth.
+- OnlyOffice may show resolved states even when Word does not.
+- Use Word as the acceptance target for resolved/active parity.
+
 ## Operational constraints
 
 - This tool is often stow-managed and symlinked into `~/.local/bin`.
@@ -109,6 +131,7 @@ Run before merging behavior changes:
 - No dropped first comment anchor.
 - Replies flattened into roots.
 - Resolved/active statuses preserved.
+- Specifically verify threaded roots (roots that had replies pre-flattening) preserve resolved state.
 
 4. If tests fail, inspect the generated `failure_bundle` path from test output:
 - `original_snapshot.json`
@@ -127,3 +150,20 @@ When changing comment logic, update both converter and tests in the same PR:
 4. Ensure fixture parity assertions in `tests/test_roundtrip_example.py` still pass.
 5. Keep diagnostics actionable (include IDs and text diffs).
 6. Avoid broad refactors without test expansion for first-char and overlapping cases.
+
+## Current design status (Feb 2026)
+
+- Root comment state is parsed from Word package metadata and roundtripped through markdown.
+- Root/reply flattening remains ID-based and child standalone artifacts are pruned package-wide.
+- State reconstruction writes:
+  - `commentsExtended.xml` (`w15:done`)
+  - `commentsIds.xml` (`paraId` <-> `durableId`)
+  - `commentsExtensible.xml` (`durableId`, `dateUtc`)
+  - `people.xml` (`w15:person` + optional `w15:presenceInfo`)
+- Thread paraId mapping uses the comment thread paraId (last paragraph `w14:paraId` for multi-paragraph comments).
+- Tests now enforce:
+  - resolved-count parity
+  - state-supporting part/relationship/content-type presence
+  - no invalid comment-level state attrs in `comments.xml`
+  - presenceInfo preservation per author when present in source
+  - thread paraId alignment to last paragraph paraId for multi-paragraph comments
