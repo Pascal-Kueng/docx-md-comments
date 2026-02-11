@@ -1,107 +1,129 @@
 # AGENTS.md
 
-This file documents implementation history, failed approaches, and guardrails so future agents can continue without reintroducing regressions.
+AI maintainer guide for `docx-comments-roundtrip`.
 
-## Project scope
+## Mission
 
-This repository maintains a practical converter for:
+Preserve Word comment integrity through `.docx <-> .md` roundtrip.
 
-- `.docx -> .md` with comments preserved as markdown spans.
-- `.md -> .docx` with comments reconstructed.
-- Threaded Word comments flattened into the parent comment body for stable roundtrip behavior.
+Core requirements:
 
-## Environment and deployment assumptions
+- Keep comment anchors and text intact.
+- Reconstruct comments from markdown spans.
+- Flatten threaded replies into root comment bodies in Word output.
+- Preserve root comment state (`active` vs `resolved`).
+- Avoid duplicate standalone reply comments after flattening.
 
-- The original script lived in a GNU Stow-managed dotfiles tree and is symlinked into `~/.local/bin`.
-- Writing runtime artifacts beside the stowed script is unacceptable.
-- Temporary artifacts must be created near the document being converted and cleaned up automatically.
+## Repository map
 
-## What was implemented
+- `docx-comments`: main converter (single Python script).
+- `docx2md`, `md2docx`: thin wrapper scripts.
+- `tests/test_roundtrip_example.py`: fixture-backed roundtrip parity test.
+- `tests/test_roundtrip_edges.py`: synthetic edge-case roundtrip tests.
+- `tests/helpers/docx_inspector.py`: reads DOCX XML into comparable snapshots.
+- `tests/helpers/markdown_inspector.py`: reads markdown comment spans into snapshots.
+- `tests/helpers/diagnostics.py`: writes failure bundles and diffs.
+- `Makefile`: test entrypoints and manual artifact workflow.
 
-1. Unified CLI and wrappers
-- Main script: `docx-comments` with auto mode detection by extension.
-- Wrappers: `docx2md`, `md2docx`.
+## Comment model and invariants
 
-2. Thread flattening model
-- Parent/child relationships are derived from comment metadata (`comments.xml`, `commentsExtended.xml`, `commentsIds.xml`) and markdown attributes.
-- Flattening output format embeds replies in parent text using a visual separator:
-  - `---`
-  - `Reply from: <Author> (<Timestamp>)`
-  - `---`
+### Word package files in scope
 
-3. Reverse conversion hardening
-- Only root comments are rewritten in `comments.xml`.
-- Child comment anchors/references and child comment nodes are pruned from package XML to avoid duplicate standalone comments.
-- Extension/id companion files are also pruned for consistency.
+- `word/comments.xml`: primary comment nodes and text.
+- `word/commentsExtended.xml`: thread links and resolved state (`w15:done`).
+- `word/commentsIds.xml`: optional helper mapping (order/para IDs in some files).
+- Story XMLs (`document.xml`, headers, footers, footnotes, endnotes): anchors/references.
 
-4. Placeholder image artifact filtering
-- Pandoc may emit tiny shape placeholders like `![](media/image1.png "Shape"){...}` and even `None.` lines.
-- These placeholders are filtered out before writing markdown and before md->docx conversion.
-- Unreferenced extracted media files are pruned.
+### Markdown span contract
 
-5. Comment text fidelity improvements
-- Inline traversal was corrected for rich inline node types (`Strong`, `Emph`, `Span`, `Quoted`, `Cite`, `Link`, etc.) so comment text is not silently dropped.
-- Line breaks are preserved as plain text paragraphs when reconstructing Word comments.
+Expected span metadata:
 
-6. Cache/temp hygiene
-- `sys.dont_write_bytecode = True` prevents `__pycache__` in stow-managed script folders.
-- `TemporaryDirectory(...)` is used so temporary conversion directories are cleaned up even on failure.
+- `.comment-start`: `id`, optional `author`, `date`, `parent`, `state`.
+- `.comment-end`: `id`.
 
-## What did NOT work (and why)
+`state` must normalize to:
 
-1. Positional/overlap-based thread inference
-- Failed on overlapping or interleaved comment spans.
-- Incorrectly merged independent threads.
-- Replaced with ID-based parent mapping.
+- `resolved`
+- `active` (default for missing/invalid values)
 
-2. Early flattening variants produced duplicate comments
-- Replies appeared both inside the flattened parent and as standalone comments.
-- Root cause: child comments were not fully removed from all Word package internals.
-- Fixed by pruning child artifacts from story XML + comments XML + extension/id files.
+## Roundtrip invariants that must hold
 
-3. Title heading injection from `docProps/core.xml`
-- Attempted fix for missing title comments added synthetic markdown heading.
-- Side effects:
-  - duplicated top heading
-  - unstable first-line behavior
-- Fully reverted. Do not reintroduce title injection unless it is proven safe with comprehensive regression tests.
+1. Original root comment IDs survive roundtrip with same root order.
+2. Child thread comments do not survive as standalone comments.
+3. Flattened root comment text contains reply blocks with author/date separators.
+4. Every roundtrip root has anchor/start/end/reference IDs in story XML.
+5. Anchor span text for roots remains equivalent (normalized comparison).
+6. `commentsExtended.xml` exists in roundtrip output and root states are preserved.
+7. `commentsIds.xml` does not reintroduce orphaned child thread artifacts.
+8. Placeholder shape image markdown artifacts are removed.
 
-4. Over-broad parent assignment from markdown metadata
-- Some IDs were treated as threaded without being confirmed as real `comment-start` spans.
-- Could cause root misclassification and apparent “missing parent comment”.
-- Fixed by validating that both child and parent IDs were actually seen as parsed comment-start spans.
+## High-risk areas and regressions to avoid
 
-## Known important edge cases
+Do not reintroduce these failure patterns:
 
-Always test these before merging changes:
+1. Positional or overlap-only thread inference.
+- Use ID and metadata mapping (`parentId`, `paraIdParent`, markdown `parent`).
+- Overlapping/interleaved anchors are valid and must not be merged heuristically.
 
-1. Comment starts at first character of document / heading line.
-2. Nested thread: root + multiple replies.
-3. Overlapping/interleaved comment spans.
-4. Single non-threaded comments still roundtrip unchanged.
-5. Long comments with bold/emphasis and manual line breaks.
-6. Documents containing real images vs shape-placeholder artifacts.
-7. Comments in title/heading regions.
-8. Roundtrip parity: no missing original root comments, no new unintended root comments.
+2. Synthetic title/header injection.
+- Never inject heading/title content from `docProps/core.xml` to "help" anchors.
+- This previously caused duplicate headings and first-line instability.
 
-## Verification protocol (minimum)
+3. Partial pruning of child artifacts.
+- If flattening removes child comments, prune child nodes across:
+  - story anchors/references
+  - `comments.xml`
+  - `commentsExtended.xml`
+  - `commentsIds.xml` (when present)
 
-For a representative fixture document:
+4. Over-broad markdown parent assignment.
+- Only trust parent-child links for IDs confirmed as real `.comment-start` spans.
 
-1. Convert `docx -> md`.
-2. Convert `md -> docx`.
-3. Compare comment IDs and parent/root structure between original and roundtrip outputs.
-4. Confirm flattened mode expectations:
-   - All original roots still present.
-   - Child comments not present as standalone comments.
-   - Reply content embedded in root body with author/date markers.
-5. Inspect first heading/title area to ensure no duplicated heading regression.
-6. Ensure no runtime artifacts are left in the repository/stow directory.
+5. Losing first-character anchors.
+- Comments that start at first document character/heading must survive.
+- This is a known fragile area and must always be covered by tests.
 
-## Operational guidance for future agents
+## Operational constraints
 
-- Prefer ID-based reconstruction logic over text-span heuristics.
-- Avoid any “helpful” synthetic content insertion (especially title/header injection) unless backed by explicit tests.
-- Keep conversion temp data close to input/output files and ephemeral.
-- If behavior changes, include before/after comment parity outputs in commit notes.
-- When in doubt, prioritize preserving original root comments and preventing duplicate standalone replies.
+- This tool is often stow-managed and symlinked into `~/.local/bin`.
+- Never write runtime artifacts beside the script location.
+- Keep temp files near the input/output document path.
+- Use `TemporaryDirectory(...)` and clean up automatically.
+- Keep `sys.dont_write_bytecode = True` behavior to avoid `__pycache__` sprawl.
+
+## Required verification workflow
+
+Run before merging behavior changes:
+
+1. `make test`
+- Runs `make roundtrip-example` first and keeps:
+  - `artifacts/out_test.md`
+  - `artifacts/out_test.docx`
+- Then runs the unittest suite.
+
+2. `make test-roundtrip`
+- Runs roundtrip-focused tests only.
+
+3. Manual inspection in Word for fixture output:
+- Comment count parity for roots.
+- No dropped first comment anchor.
+- Replies flattened into roots.
+- Resolved/active statuses preserved.
+
+4. If tests fail, inspect the generated `failure_bundle` path from test output:
+- `original_snapshot.json`
+- `markdown_snapshot.json`
+- `roundtrip_snapshot.json`
+- `command_logs.json`
+- `mismatch_report.txt`
+
+## Change checklist for future agents
+
+When changing comment logic, update both converter and tests in the same PR:
+
+1. Update parser/writer behavior in `docx-comments`.
+2. Extend inspector snapshots if new invariants are introduced.
+3. Add/adjust edge cases in `tests/test_roundtrip_edges.py`.
+4. Ensure fixture parity assertions in `tests/test_roundtrip_example.py` still pass.
+5. Keep diagnostics actionable (include IDs and text diffs).
+6. Avoid broad refactors without test expansion for first-char and overlapping cases.

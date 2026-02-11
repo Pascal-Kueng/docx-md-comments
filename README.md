@@ -1,106 +1,96 @@
 # docx-comments-roundtrip
 
-Bidirectional `.docx <-> .md` conversion with Word comment preservation and robust thread flattening.
+Bidirectional `.docx <-> .md` conversion with Word comment roundtrip support.
 
-## What this project does
+## Scope
 
-- Converts Word documents to Markdown while keeping comment markers and metadata.
-- Converts Markdown back to Word and restores comments.
-- Flattens threaded comments into the parent comment body in Word output.
-- Preserves line breaks/paragraph-like structure in flattened comments.
-- Filters known pandoc shape-placeholder image artifacts that break roundtrip.
+This tool is intentionally focused on comment-safe conversion:
 
-## Scripts
+- `docx -> md`: keeps comment anchors as markdown spans (`.comment-start` / `.comment-end`) with metadata.
+- `md -> docx`: reconstructs comments from markdown spans.
+- Threaded Word replies are flattened into the parent comment body for stable roundtrip output.
+- Comment state is preserved for roots (`active` vs `resolved`).
+- Known pandoc shape-placeholder image artifacts are filtered out of markdown.
 
-- `docx-comments`: main converter with auto mode detection by extension.
-- `docx2md`: wrapper for docx -> markdown.
-- `md2docx`: wrapper for markdown -> docx.
+This is not a full-fidelity Word layout converter. The primary goal is preserving comment structure and text through roundtrip.
 
-## Requirements
+## Installation
 
-- `pandoc` available on `PATH`
+### Prerequisites
+
 - Python 3.10+
+- `pandoc` on `PATH`
+
+### Local use from this repository
+
+Run directly:
+
+```bash
+./docx-comments --help
+```
+
+Optional wrappers:
+
+- `./docx2md`
+- `./md2docx`
+
+### Optional global install
+
+If you manage dotfiles with GNU Stow, symlink these scripts into your `PATH` (for example `~/.local/bin`), keeping the repo as the source of truth.
 
 ## Usage
 
-Auto-detect mode from input extension:
+### Main CLI (`auto` mode by extension)
 
 ```bash
-docx-comments input.docx -o output.md
-docx-comments input.md -o output.docx
+./docx-comments input.docx -o output.md
+./docx-comments input.md -o output.docx
 ```
 
-Explicit wrappers:
+### Explicit mode wrappers
 
 ```bash
-docx2md input.docx -o output.md
-md2docx input.md -o output.docx
+./docx2md input.docx -o output.md
+./md2docx input.md -o output.docx
 ```
 
-Pass additional pandoc args through unchanged:
+### Extra pandoc arguments
+
+Unknown CLI flags are forwarded to pandoc:
 
 ```bash
-docx-comments input.docx -o output.md -- --reference-doc=template.docx
+./docx-comments input.docx -o output.md --reference-doc=template.docx
 ```
 
-## Current behavior choices
+## Testing and Inspection
 
-- Thread replies are flattened into the root comment text in Word output.
-- Child comments are removed from Word package internals after flattening to avoid duplicate standalone comments.
-- Title comments at document start are supported via comment-ID-based parent mapping (not positional heuristics).
-
-## Tests
-
-Install optional test dependencies:
+Run the full suite:
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
-```
-
-Run all tests:
-
-```bash
-python3 -m unittest -q
-# or
 make test
 ```
 
-`make test` also runs the example roundtrip first and refreshes:
+`make test` always runs an example roundtrip first and keeps outputs for manual inspection:
 
 - `artifacts/out_test.md`
 - `artifacts/out_test.docx`
 
-Run roundtrip integration tests only:
+Run only roundtrip-focused tests:
 
 ```bash
-python3 -m unittest -q tests.test_roundtrip_example
-python3 -m unittest -q tests.test_roundtrip_edges
-# or
 make test-roundtrip
 ```
 
-Run a pure example roundtrip and keep outputs for manual inspection:
+Run only the example conversion (no unittest assertions):
 
 ```bash
 make roundtrip-example
 ```
 
-This writes:
-
-- `artifacts/out_test.md`
-- `artifacts/out_test.docx`
-
-Clean those artifacts:
+Remove manual artifacts:
 
 ```bash
 make clean-roundtrip-example
 ```
 
-When a roundtrip assertion fails, tests write a `failure_bundle/` folder in the test temp directory with snapshots and diffs:
-
-- `original_snapshot.json`
-- `markdown_snapshot.json`
-- `roundtrip_snapshot.json`
-- `expected_flatten.json`
-- `command_logs.json`
-- `mismatch_report.txt`
+On failures, tests write a `failure_bundle/` directory in a temp case folder with snapshots and diffs (`original`, `markdown`, `roundtrip`, command logs, and mismatch report).

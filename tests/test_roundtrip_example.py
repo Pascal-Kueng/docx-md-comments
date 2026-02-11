@@ -215,10 +215,85 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
             if unexpected:
                 errors.append(f"Roundtrip has unexpected {label} IDs not in comments.xml: {unexpected}")
 
-        if not roundtrip.has_comments_extended:
-            errors.append("Roundtrip missing word/commentsExtended.xml needed for resolved-state preservation")
-        if roundtrip.has_comments_ids:
-            errors.append("Roundtrip still contains word/commentsIds.xml")
+        expected_resolved_root_ids = sorted(
+            [cid for cid in expected_roundtrip_order if bool(original.resolved_by_id.get(cid, False))],
+            key=lambda value: (len(value), value),
+        )
+        if expected_resolved_root_ids:
+            required_flags = [
+                ("word/commentsExtended.xml", roundtrip.has_comments_extended),
+                ("word/commentsIds.xml", roundtrip.has_comments_ids),
+                ("word/commentsExtensible.xml", roundtrip.has_comments_extensible),
+                ("document.xml.rels commentsExtended relationship", roundtrip.has_comments_extended_rel),
+                ("document.xml.rels commentsIds relationship", roundtrip.has_comments_ids_rel),
+                ("document.xml.rels commentsExtensible relationship", roundtrip.has_comments_extensible_rel),
+                ("[Content_Types].xml commentsExtended override", roundtrip.has_comments_extended_content_type),
+                ("[Content_Types].xml commentsIds override", roundtrip.has_comments_ids_content_type),
+                ("[Content_Types].xml commentsExtensible override", roundtrip.has_comments_extensible_content_type),
+            ]
+            for label, present in required_flags:
+                if not present:
+                    errors.append(f"Roundtrip missing state-supporting package component: {label}")
+
+            roundtrip_para_by_root = {
+                cid: (roundtrip.comments_by_id.get(cid).para_id if roundtrip.comments_by_id.get(cid) else "")
+                for cid in expected_roundtrip_order
+            }
+            missing_root_para_ids = sorted(
+                [cid for cid, para_id in roundtrip_para_by_root.items() if not para_id],
+                key=lambda value: (len(value), value),
+            )
+            if missing_root_para_ids:
+                errors.append(
+                    "Roundtrip roots missing paraId mapping required for Word state resolution: "
+                    f"{missing_root_para_ids}"
+                )
+
+            root_para_ids = {para_id for para_id in roundtrip_para_by_root.values() if para_id}
+            comments_extended_para_ids = set(roundtrip.comments_extended_para_ids)
+            comments_ids_para_ids = set(roundtrip.comments_ids_para_ids)
+            missing_in_extended = sorted(
+                root_para_ids - comments_extended_para_ids, key=lambda value: (len(value), value)
+            )
+            missing_in_ids = sorted(
+                root_para_ids - comments_ids_para_ids, key=lambda value: (len(value), value)
+            )
+            if missing_in_extended:
+                errors.append(
+                    "Roundtrip root paraIds missing from commentsExtended.xml: "
+                    f"{missing_in_extended}"
+                )
+            if missing_in_ids:
+                errors.append(
+                    "Roundtrip root paraIds missing from commentsIds.xml: "
+                    f"{missing_in_ids}"
+                )
+
+            if comments_ids_para_ids:
+                missing_durable_para_ids = sorted(
+                    [
+                        para_id
+                        for para_id in comments_ids_para_ids
+                        if not roundtrip.comments_ids_durable_by_para.get(para_id)
+                    ],
+                    key=lambda value: (len(value), value),
+                )
+                if missing_durable_para_ids:
+                    errors.append(
+                        "commentsIds.xml has entries without durableId, cannot bind to commentsExtensible.xml: "
+                        f"{missing_durable_para_ids}"
+                    )
+
+            if roundtrip.comments_ids_durable_ids:
+                missing_extensible_ids = sorted(
+                    set(roundtrip.comments_ids_durable_ids) - set(roundtrip.comments_extensible_durable_ids),
+                    key=lambda value: (len(value), value),
+                )
+                if missing_extensible_ids:
+                    errors.append(
+                        "Durable IDs from commentsIds.xml missing in commentsExtensible.xml: "
+                        f"{missing_extensible_ids}"
+                    )
 
         if markdown.placeholder_shape_match_count > 0:
             errors.append(

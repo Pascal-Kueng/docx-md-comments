@@ -8,6 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+COMMENTS_EXT_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/commentsExtended"
+COMMENTS_IDS_REL_TYPE = "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds"
+COMMENTS_EXTENSIBLE_REL_TYPE = "http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible"
+PEOPLE_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/people"
+COMMENTS_EXT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
+COMMENTS_IDS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml"
+COMMENTS_EXTENSIBLE_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtensible+xml"
+)
+PEOPLE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.people+xml"
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,22 @@ class DocxCommentSnapshot:
     resolved_by_id: dict[str, bool]
     has_comments_extended: bool
     has_comments_ids: bool
+    has_comments_extensible: bool
+    has_people: bool
+    has_comments_extended_rel: bool
+    has_comments_ids_rel: bool
+    has_comments_extensible_rel: bool
+    has_people_rel: bool
+    has_comments_extended_content_type: bool
+    has_comments_ids_content_type: bool
+    has_comments_extensible_content_type: bool
+    has_people_content_type: bool
+    comments_extended_para_ids: list[str]
+    comments_extended_parent_para_ids: list[str]
+    comments_ids_para_ids: list[str]
+    comments_ids_durable_ids: list[str]
+    comments_ids_durable_by_para: dict[str, str]
+    comments_extensible_durable_ids: list[str]
 
     def to_dict(self) -> dict:
         return {
@@ -71,6 +97,22 @@ class DocxCommentSnapshot:
             "resolved_by_id": self.resolved_by_id,
             "has_comments_extended": self.has_comments_extended,
             "has_comments_ids": self.has_comments_ids,
+            "has_comments_extensible": self.has_comments_extensible,
+            "has_people": self.has_people,
+            "has_comments_extended_rel": self.has_comments_extended_rel,
+            "has_comments_ids_rel": self.has_comments_ids_rel,
+            "has_comments_extensible_rel": self.has_comments_extensible_rel,
+            "has_people_rel": self.has_people_rel,
+            "has_comments_extended_content_type": self.has_comments_extended_content_type,
+            "has_comments_ids_content_type": self.has_comments_ids_content_type,
+            "has_comments_extensible_content_type": self.has_comments_extensible_content_type,
+            "has_people_content_type": self.has_people_content_type,
+            "comments_extended_para_ids": self.comments_extended_para_ids,
+            "comments_extended_parent_para_ids": self.comments_extended_parent_para_ids,
+            "comments_ids_para_ids": self.comments_ids_para_ids,
+            "comments_ids_durable_ids": self.comments_ids_durable_ids,
+            "comments_ids_durable_by_para": self.comments_ids_durable_by_para,
+            "comments_extensible_durable_ids": self.comments_extensible_durable_ids,
         }
 
 
@@ -176,6 +218,60 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
         names = set(zip_file.namelist())
         has_comments_extended = "word/commentsExtended.xml" in names
         has_comments_ids = "word/commentsIds.xml" in names
+        has_comments_extensible = "word/commentsExtensible.xml" in names
+        has_people = "word/people.xml" in names
+        has_comments_extended_rel = False
+        has_comments_ids_rel = False
+        has_comments_extensible_rel = False
+        has_people_rel = False
+        has_comments_extended_content_type = False
+        has_comments_ids_content_type = False
+        has_comments_extensible_content_type = False
+        has_people_content_type = False
+        comments_extended_para_ids: set[str] = set()
+        comments_extended_parent_para_ids: set[str] = set()
+        comments_ids_para_ids: set[str] = set()
+        comments_ids_durable_ids: set[str] = set()
+        comments_ids_durable_by_para: dict[str, str] = {}
+        comments_extensible_durable_ids: set[str] = set()
+
+        if "word/_rels/document.xml.rels" in names:
+            rel_root = ET.fromstring(zip_file.read("word/_rels/document.xml.rels"))
+            for rel in rel_root.iter():
+                if local_name(rel.tag) != "Relationship":
+                    continue
+                rel_type = rel.attrib.get("Type", "")
+                if rel_type == COMMENTS_EXT_REL_TYPE:
+                    has_comments_extended_rel = True
+                elif rel_type == COMMENTS_IDS_REL_TYPE:
+                    has_comments_ids_rel = True
+                elif rel_type == COMMENTS_EXTENSIBLE_REL_TYPE:
+                    has_comments_extensible_rel = True
+                elif rel_type == PEOPLE_REL_TYPE:
+                    has_people_rel = True
+
+        if "[Content_Types].xml" in names:
+            content_root = ET.fromstring(zip_file.read("[Content_Types].xml"))
+            override_by_part = {}
+            for elem in content_root.iter():
+                if local_name(elem.tag) != "Override":
+                    continue
+                part_name = elem.attrib.get("PartName", "")
+                ctype = elem.attrib.get("ContentType", "")
+                if part_name:
+                    override_by_part[part_name] = ctype
+            has_comments_extended_content_type = (
+                override_by_part.get("/word/commentsExtended.xml") == COMMENTS_EXT_CONTENT_TYPE
+            )
+            has_comments_ids_content_type = (
+                override_by_part.get("/word/commentsIds.xml") == COMMENTS_IDS_CONTENT_TYPE
+            )
+            has_comments_extensible_content_type = (
+                override_by_part.get("/word/commentsExtensible.xml") == COMMENTS_EXTENSIBLE_CONTENT_TYPE
+            )
+            has_people_content_type = (
+                override_by_part.get("/word/people.xml") == PEOPLE_CONTENT_TYPE
+            )
 
         if "word/comments.xml" in names:
             comments_root = ET.fromstring(zip_file.read("word/comments.xml"))
@@ -219,8 +315,14 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
                 if local_name(elem.tag) != "commentId":
                     continue
                 para_id = get_attr_local(elem, "paraId")
+                durable_id = get_attr_local(elem, "durableId")
                 if para_id:
                     para_ids.append(para_id)
+                    comments_ids_para_ids.add(para_id)
+                if durable_id:
+                    comments_ids_durable_ids.add(durable_id)
+                if para_id and durable_id:
+                    comments_ids_durable_by_para[para_id] = durable_id
             if len(para_ids) == len(comment_ids_order):
                 for comment_id, para_id in zip(comment_ids_order, para_ids):
                     if para_id and para_id not in para_to_id:
@@ -234,12 +336,25 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
                 child_para = get_attr_local(elem, "paraId")
                 parent_para = get_attr_local(elem, "paraIdParent")
                 done = get_attr_local(elem, "done")
+                if child_para:
+                    comments_extended_para_ids.add(child_para)
+                if parent_para:
+                    comments_extended_parent_para_ids.add(parent_para)
                 child_id = para_to_id.get(child_para or "")
                 parent_id = para_to_id.get(parent_para or "")
                 if child_id:
                     resolved_by_id[child_id] = str(done or "").strip() == "1"
                 if child_id and parent_id and child_id not in parent_map:
                     parent_map[child_id] = parent_id
+
+        if has_comments_extensible:
+            extensible_root = ET.fromstring(zip_file.read("word/commentsExtensible.xml"))
+            for elem in extensible_root.iter():
+                if local_name(elem.tag) != "commentExtensible":
+                    continue
+                durable_id = get_attr_local(elem, "durableId")
+                if durable_id:
+                    comments_extensible_durable_ids.add(durable_id)
 
         parent_map = {
             child: parent
@@ -320,6 +435,22 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
         resolved_by_id=resolved_by_id,
         has_comments_extended=has_comments_extended,
         has_comments_ids=has_comments_ids,
+        has_comments_extensible=has_comments_extensible,
+        has_people=has_people,
+        has_comments_extended_rel=has_comments_extended_rel,
+        has_comments_ids_rel=has_comments_ids_rel,
+        has_comments_extensible_rel=has_comments_extensible_rel,
+        has_people_rel=has_people_rel,
+        has_comments_extended_content_type=has_comments_extended_content_type,
+        has_comments_ids_content_type=has_comments_ids_content_type,
+        has_comments_extensible_content_type=has_comments_extensible_content_type,
+        has_people_content_type=has_people_content_type,
+        comments_extended_para_ids=sorted(comments_extended_para_ids),
+        comments_extended_parent_para_ids=sorted(comments_extended_parent_para_ids),
+        comments_ids_para_ids=sorted(comments_ids_para_ids),
+        comments_ids_durable_ids=sorted(comments_ids_durable_ids),
+        comments_ids_durable_by_para=comments_ids_durable_by_para,
+        comments_extensible_durable_ids=sorted(comments_extensible_durable_ids),
     )
 
 

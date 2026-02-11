@@ -257,8 +257,6 @@ class TestEdgeRoundtrips(unittest.TestCase):
 
         if not roundtrip_snapshot.has_comments_extended:
             errors.append("Roundtrip missing word/commentsExtended.xml for resolved-state preservation")
-        if roundtrip_snapshot.has_comments_ids:
-            errors.append("Roundtrip contains word/commentsIds.xml")
 
         for comment_id in seed_snapshot.comment_ids_order:
             expected_state = bool(seed_snapshot.resolved_by_id.get(comment_id, False))
@@ -268,6 +266,97 @@ class TestEdgeRoundtrips(unittest.TestCase):
                     f"Roundtrip resolved-state drift for id={comment_id}. "
                     f"expected={expected_state} actual={actual_state}"
                 )
+
+        expected_resolved_root_ids = sorted(
+            [
+                cid
+                for cid in seed_snapshot.comment_ids_order
+                if bool(seed_snapshot.resolved_by_id.get(cid, False))
+            ],
+            key=lambda value: (len(value), value),
+        )
+        if expected_resolved_root_ids:
+            required_flags = [
+                ("word/commentsExtended.xml", roundtrip_snapshot.has_comments_extended),
+                ("word/commentsIds.xml", roundtrip_snapshot.has_comments_ids),
+                ("word/commentsExtensible.xml", roundtrip_snapshot.has_comments_extensible),
+                ("document.xml.rels commentsExtended relationship", roundtrip_snapshot.has_comments_extended_rel),
+                ("document.xml.rels commentsIds relationship", roundtrip_snapshot.has_comments_ids_rel),
+                ("document.xml.rels commentsExtensible relationship", roundtrip_snapshot.has_comments_extensible_rel),
+                (
+                    "[Content_Types].xml commentsExtended override",
+                    roundtrip_snapshot.has_comments_extended_content_type,
+                ),
+                ("[Content_Types].xml commentsIds override", roundtrip_snapshot.has_comments_ids_content_type),
+                (
+                    "[Content_Types].xml commentsExtensible override",
+                    roundtrip_snapshot.has_comments_extensible_content_type,
+                ),
+            ]
+            for label, present in required_flags:
+                if not present:
+                    errors.append(f"Roundtrip missing state-supporting package component: {label}")
+
+            root_para_ids = set()
+            missing_root_para_ids = []
+            for cid in seed_snapshot.comment_ids_order:
+                node = roundtrip_snapshot.comments_by_id.get(cid)
+                para_id = node.para_id if node else ""
+                if not para_id:
+                    missing_root_para_ids.append(cid)
+                    continue
+                root_para_ids.add(para_id)
+            if missing_root_para_ids:
+                errors.append(
+                    "Roundtrip roots missing paraId mapping required for Word state resolution: "
+                    f"{sorted(missing_root_para_ids, key=lambda value: (len(value), value))}"
+                )
+
+            comments_extended_para_ids = set(roundtrip_snapshot.comments_extended_para_ids)
+            comments_ids_para_ids = set(roundtrip_snapshot.comments_ids_para_ids)
+            missing_in_extended = sorted(
+                root_para_ids - comments_extended_para_ids, key=lambda value: (len(value), value)
+            )
+            missing_in_ids = sorted(
+                root_para_ids - comments_ids_para_ids, key=lambda value: (len(value), value)
+            )
+            if missing_in_extended:
+                errors.append(
+                    "Roundtrip root paraIds missing from commentsExtended.xml: "
+                    f"{missing_in_extended}"
+                )
+            if missing_in_ids:
+                errors.append(
+                    "Roundtrip root paraIds missing from commentsIds.xml: "
+                    f"{missing_in_ids}"
+                )
+
+            if comments_ids_para_ids:
+                missing_durable_para_ids = sorted(
+                    [
+                        para_id
+                        for para_id in comments_ids_para_ids
+                        if not roundtrip_snapshot.comments_ids_durable_by_para.get(para_id)
+                    ],
+                    key=lambda value: (len(value), value),
+                )
+                if missing_durable_para_ids:
+                    errors.append(
+                        "commentsIds.xml has entries without durableId, cannot bind to commentsExtensible.xml: "
+                        f"{missing_durable_para_ids}"
+                    )
+
+            if roundtrip_snapshot.comments_ids_durable_ids:
+                missing_extensible_ids = sorted(
+                    set(roundtrip_snapshot.comments_ids_durable_ids)
+                    - set(roundtrip_snapshot.comments_extensible_durable_ids),
+                    key=lambda value: (len(value), value),
+                )
+                if missing_extensible_ids:
+                    errors.append(
+                        "Durable IDs from commentsIds.xml missing in commentsExtensible.xml: "
+                        f"{missing_extensible_ids}"
+                    )
 
         if errors:
             failure_bundle = write_failure_bundle(
