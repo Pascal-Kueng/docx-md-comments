@@ -1,27 +1,19 @@
 # docx-comments-roundtrip
 
-Lossless `.docx <-> .md` conversion focused on preserving Word comment anchors, threads, and states.
+Lossless `.docx <-> .md` conversion focused on **Word comment fidelity**:
 
-## Scope
+- comment anchors
+- threaded replies
+- active/resolved state
 
-This tool is intentionally narrow and robust:
+If your workflow is "edit in markdown/LLM, then return to Word without breaking comments", this tool is for that.
 
-- Preserves comment anchors through roundtrip.
-- Reconstructs native Word reply threads (`parentId` / `paraIdParent`) on `md -> docx`.
-- Preserves comment state (`active` / `resolved`) for roots and replies.
-- Uses readable markdown markers and cards:
-  - Prose markers: `==///C<ID>.START///== ... ==///C<ID>.END///==` (or unwrapped `///...///`).
-  - Comment cards: blockquote callouts with `CARD_META` HTML comments.
-- Validates malformed marker edits with line-specific diagnostics before conversion.
-
-It is not a general-purpose Word layout converter; comment fidelity is the primary goal.
-
-## Installation
+## Install
 
 ### Prerequisites
 
 - Python 3.10+
-- Pandoc on `PATH`
+- Pandoc available on `PATH`
 
 Install Pandoc:
 
@@ -29,7 +21,7 @@ Install Pandoc:
 - Ubuntu/Debian: `sudo apt-get install pandoc`
 - Windows (PowerShell): `choco install pandoc -y`
 
-### Recommended: `pipx`
+### Recommended (isolated): `pipx`
 
 ```bash
 pipx install docx-comments-roundtrip
@@ -47,38 +39,29 @@ pipx upgrade docx-comments-roundtrip
 python -m pip install docx-comments-roundtrip
 ```
 
-### Local development install
+## Quick usage
 
-From this repository:
+### Auto mode
 
-```bash
-python -m pip install -e .
-```
-
-## CLI Usage
-
-Installed console commands:
-
-- `dmt`
-- `docx-comments`
-- `docx2md`, `d2m`
-- `md2docx`, `m2d`
-
-### Auto-detect mode
+All of these are equivalent:
 
 ```bash
 dmt draft.docx
-dmt draft.md
+docx-comments draft.docx
+docx2md draft.docx
+d2m draft.docx
 ```
 
-Equivalent legacy command:
+All of these are equivalent:
 
 ```bash
-docx-comments draft.docx
+dmt draft.md
 docx-comments draft.md
+md2docx draft.md
+m2d draft.md
 ```
 
-### Explicit conversion
+### Explicit mode
 
 DOCX -> Markdown:
 
@@ -96,25 +79,25 @@ m2d draft.md -o draft.docx
 dmt md2docx draft.md -o draft.docx
 ```
 
-Reference document shortcut (`-r/--ref`):
+Use a reference Word document for styling:
 
 ```bash
 md2docx draft.md --ref original.docx -o final.docx
 m2d draft.md -r original.docx -o final.docx
 ```
 
-`--ref` maps to pandoc `--reference-doc`.
+`--ref` maps to Pandoc `--reference-doc`.
 
-### Pass-through pandoc args
+### Pass-through Pandoc arguments
 
-Unknown flags are forwarded to pandoc:
+Unknown flags are passed through to Pandoc:
 
 ```bash
 docx2md draft.docx -o draft.md --extract-media=media
 dmt md2docx draft.md --reference-doc=template.docx
 ```
 
-## Help Screens
+## Help
 
 ```bash
 dmt --help
@@ -124,21 +107,40 @@ md2docx --help
 
 ## Testing
 
-Run everything:
+Run full suite:
 
 ```bash
 make test
 ```
 
-Run roundtrip-focused tests only:
+Roundtrip-focused tests only:
 
 ```bash
 make test-roundtrip
 ```
 
-`make test` also writes manual artifacts:
+`make test` also writes:
 
 - `artifacts/out_test.md`
 - `artifacts/out_test.docx`
 
-When a test fails, inspect the emitted `failure_bundle` path from unittest output.
+## Report issues
+
+Please open bugs/feature requests at:
+
+https://github.com/pascalkueng/docx-comments-roundtrip/issues
+
+When reporting a conversion bug, include:
+
+- input sample (or minimal repro)
+- command used
+- expected vs actual behavior (Word view)
+- failing `failure_bundle` path if tests failed
+
+## Technical notes (brief)
+
+- Markdown marker style uses `///C<ID>.START///` / `///C<ID>.END///` (with optional `==...==` highlight wrapper).
+- Reply relationships are reconstructed as native Word threads (`commentsExtended.xml` `paraIdParent` + story markers).
+- The validator fails fast on malformed marker edits with line-specific diagnostics.
+
+For deeper maintainer details, see `AGENTS.md`.

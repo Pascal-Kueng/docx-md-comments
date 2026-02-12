@@ -7,7 +7,7 @@ The package is close to distribution-ready. Use this checklist to publish safely
 1. Commit all packaging and CLI changes.
 2. Confirm the package name in `pyproject.toml` is the one you want on PyPI.
 3. Ensure licensing is consistent:
-   - `pyproject.toml` declares MIT
+   - `pyproject.toml` declares Apache-2.0
    - repository contains a matching `LICENSE` file
 
 ## 2) Build and validate artifacts
