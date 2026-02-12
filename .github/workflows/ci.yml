@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install pandoc (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+
+      - name: Install pandoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install pandoc
+
+      - name: Install pandoc (Windows)
+        if: runner.os == 'Windows'
+        run: choco install pandoc --no-progress -y
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run tests
+        run: python -m unittest -q
+
+      - name: CLI smoke tests
+        run: |
+          dmt --help
+          docx2md --help
+          md2docx --help
+          d2m --help
+          m2d --help

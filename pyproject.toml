@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docx-comments-roundtrip"
+version = "0.1.0"
+description = "Lossless DOCX <-> Markdown conversion preserving Word comment threads"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "docx-comments-roundtrip maintainers"}]
+license = {text = "MIT"}
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/pascalkueng/docx-comments-roundtrip"
+
+[project.scripts]
+dmt = "dmt.cli:main"
+docx-comments = "dmt.cli:main_docx_comments"
+docx2md = "dmt.cli:main_docx2md"
+md2docx = "dmt.cli:main_md2docx"
+d2m = "dmt.cli:main_docx2md"
+m2d = "dmt.cli:main_md2docx"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,3 +1,19 @@
+Metadata-Version: 2.4
+Name: docx-comments-roundtrip
+Version: 0.1.0
+Summary: Lossless DOCX <-> Markdown conversion preserving Word comment threads
+Author: docx-comments-roundtrip maintainers
+License: MIT
+Project-URL: Homepage, https://github.com/pascalkueng/docx-comments-roundtrip
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+
 # docx-comments-roundtrip
 
 Lossless `.docx <-> .md` conversion focused on preserving Word comment anchors, threads, and states.

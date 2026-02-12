@@ -158,7 +158,6 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                 errors.append(f"Roundtrip missing expected parent mappings: {missing}")
             if unexpected:
                 errors.append(f"Roundtrip has unexpected parent mappings: {unexpected}")
-
         if markdown.root_ids_order != expected_from_original.root_ids_order:
             errors.append(
                 "Markdown root comment order mismatch vs original-derived roots. "
@@ -238,7 +237,7 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                         f"anchor {root_id}",
                     )
 
-        expected_anchor_ids = set(expected_from_original.root_ids_order)
+        expected_anchor_ids = set(expected_roundtrip_order)
         for label, observed_ids in [
             ("anchor", set(roundtrip.anchor_ids_order)),
             ("range-start", set(roundtrip.range_start_ids)),

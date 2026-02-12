@@ -1,0 +1,7 @@
+[console_scripts]
+d2m = dmt.cli:main_docx2md
+dmt = dmt.cli:main
+docx-comments = dmt.cli:main_docx_comments
+docx2md = dmt.cli:main_docx2md
+m2d = dmt.cli:main_md2docx
+md2docx = dmt.cli:main_md2docx

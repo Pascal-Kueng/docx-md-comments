@@ -179,7 +179,6 @@ class TestEdgeRoundtrips(unittest.TestCase):
                 "Roundtrip parent map drift. "
                 f"expected={seed_snapshot.parent_map} actual={roundtrip_snapshot.parent_map}"
             )
-
         seed_anchor_set = set(seed_snapshot.anchor_ids_order)
         middle_start_set = set(middle_snapshot.start_ids_order)
         missing_markdown_starts = sorted(seed_anchor_set - middle_start_set, key=lambda value: (len(value), value))
@@ -205,7 +204,7 @@ class TestEdgeRoundtrips(unittest.TestCase):
                     f"expected={expected_state} actual={actual_state}"
                 )
 
-        expected_anchor_ids = {cid for cid in seed_snapshot.comment_ids_order if cid not in seed_snapshot.parent_map}
+        expected_anchor_ids = set(seed_snapshot.comment_ids_order)
         for label, observed_ids in [
             ("anchor", set(roundtrip_snapshot.anchor_ids_order)),
             ("range-start", set(roundtrip_snapshot.range_start_ids)),

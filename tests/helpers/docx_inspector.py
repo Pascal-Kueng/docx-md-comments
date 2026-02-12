@@ -76,12 +76,21 @@ class DocxCommentSnapshot:
     has_comments_xml_w16cid_ns: bool
     has_comments_xml_w16cex_ns: bool
     comments_xml_ignorable_tokens: list[str]
+    comments_extended_ignorable_tokens: list[str]
+    comments_ids_ignorable_tokens: list[str]
+    comments_extensible_ignorable_tokens: list[str]
+    has_settings_xml_w15_ns: bool
+    has_settings_xml_w14_ns: bool
+    settings_xml_ignorable_tokens: list[str]
+    settings_compatibility_mode: str
     people_presence_provider_by_author: dict[str, str]
     people_presence_user_by_author: dict[str, str]
     first_paragraph_para_by_id: dict[str, str]
     last_paragraph_para_by_id: dict[str, str]
     paragraph_count_by_id: dict[str, int]
+    annotation_ref_count_by_id: dict[str, int]
     comment_state_attr_by_id: dict[str, str]
+    comment_parent_attr_by_id: dict[str, str]
     comment_para_attr_by_id: dict[str, str]
     comment_durable_attr_by_id: dict[str, str]
     comments_extended_para_ids: list[str]
@@ -125,12 +134,21 @@ class DocxCommentSnapshot:
             "has_comments_xml_w16cid_ns": self.has_comments_xml_w16cid_ns,
             "has_comments_xml_w16cex_ns": self.has_comments_xml_w16cex_ns,
             "comments_xml_ignorable_tokens": self.comments_xml_ignorable_tokens,
+            "comments_extended_ignorable_tokens": self.comments_extended_ignorable_tokens,
+            "comments_ids_ignorable_tokens": self.comments_ids_ignorable_tokens,
+            "comments_extensible_ignorable_tokens": self.comments_extensible_ignorable_tokens,
+            "has_settings_xml_w15_ns": self.has_settings_xml_w15_ns,
+            "has_settings_xml_w14_ns": self.has_settings_xml_w14_ns,
+            "settings_xml_ignorable_tokens": self.settings_xml_ignorable_tokens,
+            "settings_compatibility_mode": self.settings_compatibility_mode,
             "people_presence_provider_by_author": self.people_presence_provider_by_author,
             "people_presence_user_by_author": self.people_presence_user_by_author,
             "first_paragraph_para_by_id": self.first_paragraph_para_by_id,
             "last_paragraph_para_by_id": self.last_paragraph_para_by_id,
             "paragraph_count_by_id": self.paragraph_count_by_id,
+            "annotation_ref_count_by_id": self.annotation_ref_count_by_id,
             "comment_state_attr_by_id": self.comment_state_attr_by_id,
+            "comment_parent_attr_by_id": self.comment_parent_attr_by_id,
             "comment_para_attr_by_id": self.comment_para_attr_by_id,
             "comment_durable_attr_by_id": self.comment_durable_attr_by_id,
             "comments_extended_para_ids": self.comments_extended_para_ids,
@@ -265,12 +283,21 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
         has_comments_xml_w16cid_ns = False
         has_comments_xml_w16cex_ns = False
         comments_xml_ignorable_tokens: list[str] = []
+        comments_extended_ignorable_tokens: list[str] = []
+        comments_ids_ignorable_tokens: list[str] = []
+        comments_extensible_ignorable_tokens: list[str] = []
+        has_settings_xml_w15_ns = False
+        has_settings_xml_w14_ns = False
+        settings_xml_ignorable_tokens: list[str] = []
+        settings_compatibility_mode = ""
         people_presence_provider_by_author: dict[str, str] = {}
         people_presence_user_by_author: dict[str, str] = {}
         first_paragraph_para_by_id: dict[str, str] = {}
         last_paragraph_para_by_id: dict[str, str] = {}
         paragraph_count_by_id: dict[str, int] = {}
+        annotation_ref_count_by_id: dict[str, int] = {}
         comment_state_attr_by_id: dict[str, str] = {}
+        comment_parent_attr_by_id: dict[str, str] = {}
         comment_para_attr_by_id: dict[str, str] = {}
         comment_durable_attr_by_id: dict[str, str] = {}
 
@@ -330,11 +357,13 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
                 if cid is None:
                     continue
                 comment_state_attr_by_id[cid] = get_attr_local(comment, "state") or ""
+                comment_parent_attr_by_id[cid] = get_attr_local(comment, "parentId") or ""
                 comment_para_attr_by_id[cid] = get_attr_local(comment, "paraId") or ""
                 comment_durable_attr_by_id[cid] = get_attr_local(comment, "durableId") or ""
                 paragraph_para_ids = []
                 paragraphs = comment.findall(f"./{{{W_NS}}}p")
                 paragraph_count_by_id[cid] = len(paragraphs)
+                annotation_ref_count_by_id[cid] = len(list(comment.iter(f"{{{W_NS}}}annotationRef")))
                 for paragraph in paragraphs:
                     paragraph_para_id = get_attr_local(paragraph, "paraId") or ""
                     if paragraph_para_id:
@@ -359,6 +388,47 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
                 if node.para_id:
                     para_to_id[node.para_id] = cid
                 resolved_by_id[cid] = False
+
+        if "word/commentsExtended.xml" in names:
+            comments_extended_raw = zip_file.read("word/commentsExtended.xml").decode("utf-8", errors="replace")
+            ignorable_match = re.search(r'\b(?:mc:)?Ignorable="([^"]*)"', comments_extended_raw)
+            if ignorable_match:
+                comments_extended_ignorable_tokens = sorted(
+                    [token for token in (ignorable_match.group(1) or "").split() if token]
+                )
+
+        if "word/commentsIds.xml" in names:
+            comments_ids_raw = zip_file.read("word/commentsIds.xml").decode("utf-8", errors="replace")
+            ignorable_match = re.search(r'\b(?:mc:)?Ignorable="([^"]*)"', comments_ids_raw)
+            if ignorable_match:
+                comments_ids_ignorable_tokens = sorted(
+                    [token for token in (ignorable_match.group(1) or "").split() if token]
+                )
+
+        if "word/commentsExtensible.xml" in names:
+            comments_extensible_raw = zip_file.read("word/commentsExtensible.xml").decode("utf-8", errors="replace")
+            ignorable_match = re.search(r'\b(?:mc:)?Ignorable="([^"]*)"', comments_extensible_raw)
+            if ignorable_match:
+                comments_extensible_ignorable_tokens = sorted(
+                    [token for token in (ignorable_match.group(1) or "").split() if token]
+                )
+
+        if "word/settings.xml" in names:
+            settings_xml_raw = zip_file.read("word/settings.xml").decode("utf-8", errors="replace")
+            has_settings_xml_w15_ns = 'xmlns:w15="' in settings_xml_raw
+            has_settings_xml_w14_ns = 'xmlns:w14="' in settings_xml_raw
+            ignorable_match = re.search(r'\b(?:mc:)?Ignorable="([^"]*)"', settings_xml_raw)
+            if ignorable_match:
+                settings_xml_ignorable_tokens = sorted(
+                    [token for token in (ignorable_match.group(1) or "").split() if token]
+                )
+            settings_root = ET.fromstring(settings_xml_raw)
+            for setting in settings_root.iter(f"{{{W_NS}}}compatSetting"):
+                name = (get_attr_local(setting, "name") or "").strip()
+                uri = (get_attr_local(setting, "uri") or "").strip()
+                if name == "compatibilityMode" and uri == "http://schemas.microsoft.com/office/word":
+                    settings_compatibility_mode = (get_attr_local(setting, "val") or "").strip()
+                    break
 
         if has_comments_ids and comment_ids_order:
             ids_root = ET.fromstring(zip_file.read("word/commentsIds.xml"))
@@ -543,12 +613,21 @@ def inspect_docx(docx_path: Path) -> DocxCommentSnapshot:
         has_comments_xml_w16cid_ns=has_comments_xml_w16cid_ns,
         has_comments_xml_w16cex_ns=has_comments_xml_w16cex_ns,
         comments_xml_ignorable_tokens=comments_xml_ignorable_tokens,
+        comments_extended_ignorable_tokens=comments_extended_ignorable_tokens,
+        comments_ids_ignorable_tokens=comments_ids_ignorable_tokens,
+        comments_extensible_ignorable_tokens=comments_extensible_ignorable_tokens,
+        has_settings_xml_w15_ns=has_settings_xml_w15_ns,
+        has_settings_xml_w14_ns=has_settings_xml_w14_ns,
+        settings_xml_ignorable_tokens=settings_xml_ignorable_tokens,
+        settings_compatibility_mode=settings_compatibility_mode,
         people_presence_provider_by_author=people_presence_provider_by_author,
         people_presence_user_by_author=people_presence_user_by_author,
         first_paragraph_para_by_id=first_paragraph_para_by_id,
         last_paragraph_para_by_id=last_paragraph_para_by_id,
         paragraph_count_by_id=paragraph_count_by_id,
+        annotation_ref_count_by_id=annotation_ref_count_by_id,
         comment_state_attr_by_id=comment_state_attr_by_id,
+        comment_parent_attr_by_id=comment_parent_attr_by_id,
         comment_para_attr_by_id=comment_para_attr_by_id,
         comment_durable_attr_by_id=comment_durable_attr_by_id,
         comments_extended_para_ids=sorted(comments_extended_para_ids),
