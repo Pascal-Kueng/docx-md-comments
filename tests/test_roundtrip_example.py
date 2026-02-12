@@ -50,7 +50,7 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
         if not EXAMPLE_DOCX.exists():
             raise unittest.SkipTest(f"example fixture not found: {EXAMPLE_DOCX}")
 
-    def test_comment_integrity_and_thread_flattening(self) -> None:
+    def test_comment_integrity_and_thread_roundtrip(self) -> None:
         case_dir = Path(tempfile.mkdtemp(prefix="roundtrip-example-", dir="/tmp"))
 
         source_docx = case_dir / "input.docx"
@@ -84,15 +84,15 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
         errors: list[str] = []
         text_mismatch_diffs: dict[str, str] = {}
 
-        original_root_set = set(expected_from_original.root_ids_order)
-        roundtrip_root_set = set(roundtrip.comment_ids_order)
-        if roundtrip_root_set != original_root_set:
-            missing = original_root_set - roundtrip_root_set
-            unexpected = roundtrip_root_set - original_root_set
+        original_comment_set = set(original.comment_ids_order)
+        roundtrip_comment_set = set(roundtrip.comment_ids_order)
+        if roundtrip_comment_set != original_comment_set:
+            missing = original_comment_set - roundtrip_comment_set
+            unexpected = roundtrip_comment_set - original_comment_set
             if missing:
-                errors.append(f"Missing original root comment IDs in roundtrip: {format_set(missing)}")
+                errors.append(f"Missing original comment IDs in roundtrip: {format_set(missing)}")
             if unexpected:
-                errors.append(f"Unexpected roundtrip root comment IDs: {format_set(unexpected)}")
+                errors.append(f"Unexpected roundtrip comment IDs: {format_set(unexpected)}")
 
         expected_parent_map = {
             child_id: parent_id
@@ -137,26 +137,27 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                     f"Markdown state mismatch for comment {cid}: expected={expected_state} actual={actual_state}"
                 )
 
-        original_child_set = set(expected_from_original.child_ids)
-        for label, values in [
-            ("roundtrip comment nodes", roundtrip.comment_ids_order),
-            ("roundtrip anchor IDs", roundtrip.anchor_ids_order),
-            ("roundtrip range-start IDs", roundtrip.range_start_ids),
-            ("roundtrip reference IDs", roundtrip.reference_ids),
-        ]:
-            leaked = original_child_set.intersection(values)
-            if leaked:
-                errors.append(f"Thread child IDs leaked into {label}: {format_set(leaked)}")
-
-        if roundtrip.parent_map:
-            errors.append(f"Roundtrip parent map must be empty after flattening but got: {roundtrip.parent_map}")
-
-        expected_roundtrip_order = [cid for cid in expected_from_original.root_ids_order if cid in roundtrip.comments_by_id]
-        if roundtrip.comment_ids_order != expected_roundtrip_order:
+        expected_roundtrip_order = [cid for cid in original.comment_ids_order if cid in roundtrip.comments_by_id]
+        expected_roundtrip_root_order = [cid for cid in expected_from_original.root_ids_order if cid in roundtrip.comments_by_id]
+        roundtrip_root_order = [cid for cid in roundtrip.comment_ids_order if cid not in roundtrip.parent_map]
+        if roundtrip_root_order != expected_roundtrip_root_order:
             errors.append(
-                "Roundtrip root comment order mismatch. "
-                f"expected={expected_roundtrip_order} actual={roundtrip.comment_ids_order}"
+                "Roundtrip root order mismatch. "
+                f"expected={expected_roundtrip_root_order} actual={roundtrip_root_order}"
             )
+
+        expected_roundtrip_parent_map = {
+            child_id: parent_id
+            for child_id, parent_id in original.parent_map.items()
+            if child_id in roundtrip.comments_by_id and parent_id in roundtrip.comments_by_id
+        }
+        if roundtrip.parent_map != expected_roundtrip_parent_map:
+            missing = sorted(set(expected_roundtrip_parent_map.items()) - set(roundtrip.parent_map.items()))
+            unexpected = sorted(set(roundtrip.parent_map.items()) - set(expected_roundtrip_parent_map.items()))
+            if missing:
+                errors.append(f"Roundtrip missing expected parent mappings: {missing}")
+            if unexpected:
+                errors.append(f"Roundtrip has unexpected parent mappings: {unexpected}")
 
         if markdown.root_ids_order != expected_from_original.root_ids_order:
             errors.append(
@@ -179,32 +180,32 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                     expected_from_orig_text, markdown_text, f"markdown comment {root_id}"
                 )
 
-        for root_id in expected_roundtrip_order:
-            expected_text = expected_from_original.flattened_by_root.get(root_id, "")
-            actual_node = roundtrip.comments_by_id.get(root_id)
+        for comment_id in expected_roundtrip_order:
+            original_node = original.comments_by_id.get(comment_id)
+            actual_node = roundtrip.comments_by_id.get(comment_id)
             if actual_node is None:
-                errors.append(f"Roundtrip missing expected root comment: {root_id}")
+                errors.append(f"Roundtrip missing expected comment: {comment_id}")
                 continue
+            expected_text = original_node.text if original_node is not None else ""
             expected_norm = normalize_comment_text(expected_text)
             actual_norm = normalize_comment_text(actual_node.text)
             if expected_norm != actual_norm:
-                errors.append(f"Flattened text mismatch for root comment {root_id}")
-                text_mismatch_diffs[root_id] = text_diff(expected_text, actual_node.text, f"comment {root_id}")
-            expected_state = bool(original.resolved_by_id.get(root_id, False))
-            actual_state = bool(roundtrip.resolved_by_id.get(root_id, False))
+                errors.append(f"Comment text mismatch for comment {comment_id}")
+                text_mismatch_diffs[comment_id] = text_diff(expected_text, actual_node.text, f"comment {comment_id}")
+            expected_state = bool(original.resolved_by_id.get(comment_id, False))
+            actual_state = bool(roundtrip.resolved_by_id.get(comment_id, False))
             if expected_state != actual_state:
                 errors.append(
-                    f"Roundtrip resolved-state mismatch for root comment {root_id}: "
+                    f"Roundtrip resolved-state mismatch for comment {comment_id}: "
                     f"expected={expected_state} actual={actual_state}"
                 )
 
-            original_node = original.comments_by_id.get(root_id)
             if original_node is not None:
                 expected_para_id = (original_node.para_id or "").strip()
                 actual_para_id = (actual_node.para_id or "").strip()
                 if expected_para_id and actual_para_id and expected_para_id != actual_para_id:
                     errors.append(
-                        f"Roundtrip paraId drift for root comment {root_id}: "
+                        f"Roundtrip paraId drift for comment {comment_id}: "
                         f"expected={expected_para_id} actual={actual_para_id}"
                     )
 
@@ -220,19 +221,13 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                 )
                 if expected_durable_id and actual_durable_id and expected_durable_id != actual_durable_id:
                     errors.append(
-                        f"Roundtrip durableId drift for root comment {root_id}: "
+                        f"Roundtrip durableId drift for comment {comment_id}: "
                         f"expected={expected_durable_id} actual={actual_durable_id}"
                     )
 
         uses_milestone_markers = bool(MILESTONE_TOKEN_RE.search(markdown_text_for_mode))
         if not uses_milestone_markers:
-            threaded_root_ids = set(original.parent_map.values())
             for root_id in expected_from_original.root_ids_order:
-                if root_id in threaded_root_ids:
-                    continue
-                original_node = original.comments_by_id.get(root_id)
-                if original_node is not None and "Reply from:" in (original_node.text or ""):
-                    continue
                 expected_anchor_text = normalize_anchor_text(original.anchor_text_by_id.get(root_id, ""))
                 actual_anchor_text = normalize_anchor_text(roundtrip.anchor_text_by_id.get(root_id, ""))
                 if expected_anchor_text != actual_anchor_text:
@@ -243,26 +238,26 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                         f"anchor {root_id}",
                     )
 
-        roundtrip_id_set = set(roundtrip.comment_ids_order)
+        expected_anchor_ids = set(expected_from_original.root_ids_order)
         for label, observed_ids in [
             ("anchor", set(roundtrip.anchor_ids_order)),
             ("range-start", set(roundtrip.range_start_ids)),
             ("range-end", set(roundtrip.range_end_ids)),
             ("commentReference", set(roundtrip.reference_ids)),
         ]:
-            missing = sorted(roundtrip_id_set - observed_ids, key=lambda value: (len(value), value))
-            unexpected = sorted(observed_ids - roundtrip_id_set, key=lambda value: (len(value), value))
+            missing = sorted(expected_anchor_ids - observed_ids, key=lambda value: (len(value), value))
+            unexpected = sorted(observed_ids - expected_anchor_ids, key=lambda value: (len(value), value))
             if missing:
                 errors.append(f"Roundtrip missing {label} IDs for comments: {missing}")
             if unexpected:
                 errors.append(f"Roundtrip has unexpected {label} IDs not in comments.xml: {unexpected}")
 
-        expected_resolved_root_ids = sorted(
+        expected_resolved_comment_ids = sorted(
             [cid for cid in expected_roundtrip_order if bool(original.resolved_by_id.get(cid, False))],
             key=lambda value: (len(value), value),
         )
-        if expected_resolved_root_ids:
-            expected_resolved_count = len(expected_resolved_root_ids)
+        if expected_resolved_comment_ids:
+            expected_resolved_count = len(expected_resolved_comment_ids)
             actual_resolved_count = len(
                 [cid for cid in expected_roundtrip_order if bool(roundtrip.resolved_by_id.get(cid, False))]
             )
@@ -297,15 +292,15 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                     errors.append(f"Roundtrip missing state-supporting package component: {label}")
 
             if original.has_people:
-                expected_root_authors = sorted(
+                expected_authors = sorted(
                     {
                         (original.comments_by_id.get(cid).author or "").strip()
                         for cid in expected_roundtrip_order
                         if original.comments_by_id.get(cid)
                     }
                 )
-                expected_root_authors = [author for author in expected_root_authors if author]
-                for author in expected_root_authors:
+                expected_authors = [author for author in expected_authors if author]
+                for author in expected_authors:
                     expected_provider = (original.people_presence_provider_by_author.get(author) or "").strip()
                     expected_user = (original.people_presence_user_by_author.get(author) or "").strip()
                     if not (expected_provider or expected_user):
@@ -370,7 +365,7 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                     f"{introduced_durable_attr_ids}"
                 )
 
-            roundtrip_para_by_root = {
+            roundtrip_para_by_comment = {
                 cid: (roundtrip.comments_by_id.get(cid).para_id if roundtrip.comments_by_id.get(cid) else "")
                 for cid in expected_roundtrip_order
             }
@@ -391,33 +386,55 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
                     f"{thread_para_mismatch_ids}"
                 )
             missing_root_para_ids = sorted(
-                [cid for cid, para_id in roundtrip_para_by_root.items() if not para_id],
+                [cid for cid, para_id in roundtrip_para_by_comment.items() if not para_id],
                 key=lambda value: (len(value), value),
             )
             if missing_root_para_ids:
                 errors.append(
-                    "Roundtrip roots missing paraId mapping required for Word state resolution: "
+                    "Roundtrip comments missing paraId mapping required for Word state resolution: "
                     f"{missing_root_para_ids}"
                 )
 
-            root_para_ids = {para_id for para_id in roundtrip_para_by_root.values() if para_id}
+            comment_para_ids = {para_id for para_id in roundtrip_para_by_comment.values() if para_id}
             comments_extended_para_ids = set(roundtrip.comments_extended_para_ids)
             comments_ids_para_ids = set(roundtrip.comments_ids_para_ids)
             missing_in_extended = sorted(
-                root_para_ids - comments_extended_para_ids, key=lambda value: (len(value), value)
+                comment_para_ids - comments_extended_para_ids, key=lambda value: (len(value), value)
             )
             missing_in_ids = sorted(
-                root_para_ids - comments_ids_para_ids, key=lambda value: (len(value), value)
+                comment_para_ids - comments_ids_para_ids, key=lambda value: (len(value), value)
             )
             if missing_in_extended:
                 errors.append(
-                    "Roundtrip root paraIds missing from commentsExtended.xml: "
+                    "Roundtrip comment paraIds missing from commentsExtended.xml: "
                     f"{missing_in_extended}"
                 )
             if missing_in_ids:
                 errors.append(
-                    "Roundtrip root paraIds missing from commentsIds.xml: "
+                    "Roundtrip comment paraIds missing from commentsIds.xml: "
                     f"{missing_in_ids}"
+                )
+
+            expected_parent_para_ids = sorted(
+                [
+                    roundtrip.comments_by_id[parent_id].para_id
+                    for parent_id in roundtrip.parent_map.values()
+                    if parent_id in roundtrip.comments_by_id and roundtrip.comments_by_id[parent_id].para_id
+                ],
+                key=lambda value: (len(value), value),
+            )
+            missing_parent_para_ids = sorted(
+                [
+                    para_id
+                    for para_id in expected_parent_para_ids
+                    if para_id not in set(roundtrip.comments_extended_parent_para_ids)
+                ],
+                key=lambda value: (len(value), value),
+            )
+            if missing_parent_para_ids:
+                errors.append(
+                    "Roundtrip parent paraIds missing from commentsExtended.xml paraIdParent entries: "
+                    f"{missing_parent_para_ids}"
                 )
 
             if comments_ids_para_ids:

@@ -25,8 +25,8 @@ This tool is intentionally focused on comment-safe conversion:
     - `> > [!REPLY <id>: <author> (<state>)]`
     - `> > <!--CARD_META{#<id> ... "parent":"<root-id>"}-->`
     - `> > <reply body>`
-- Threaded Word replies are flattened into the parent comment body for stable roundtrip output.
-- Comment state is preserved for roots (`active` vs `resolved`).
+- Threaded Word replies are reconstructed as native reply threads (`parentId` / `paraIdParent`) in `.docx` output.
+- Comment state is preserved (`active` vs `resolved`) for roots and replies.
 - Known pandoc shape-placeholder image artifacts are filtered out of markdown.
 
 This is not a full-fidelity Word layout converter. The primary goal is preserving comment structure and text through roundtrip.

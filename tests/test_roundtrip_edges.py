@@ -28,7 +28,7 @@ def run_converter(converter_path: Path, input_path: Path, output_path: Path, cwd
 EDGE_CASES = [
     {
         "name": "heading_start_single_comment",
-        "expected_root_ids": ["1", "2"],
+        "expected_comment_ids": ["1", "2"],
         "expected_state_by_root": {"1": "active", "2": "active"},
         "markdown": (
             '# [Title]{.comment-start id="1" author="A" date="2026-01-01T00:00:00Z"}'
@@ -39,7 +39,7 @@ EDGE_CASES = [
     },
     {
         "name": "nested_replies",
-        "expected_root_ids": ["10"],
+        "expected_comment_ids": ["10", "11", "13", "12"],
         "expected_state_by_root": {"10": "active"},
         "markdown": (
             "Paragraph with [root note]{.comment-start id=\"10\" author=\"Root\" date=\"2026-01-01T00:00:00Z\"}"
@@ -53,7 +53,7 @@ EDGE_CASES = [
     },
     {
         "name": "interleaved_root_comments",
-        "expected_root_ids": ["20", "21"],
+        "expected_comment_ids": ["20", "21"],
         "expected_state_by_root": {"20": "active", "21": "active"},
         "markdown": (
             "Start [A]{.comment-start id=\"20\" author=\"A\" date=\"2026-01-02T00:00:00Z\"}"
@@ -63,7 +63,7 @@ EDGE_CASES = [
     },
     {
         "name": "nested_end_wrapper_with_multiple_inner_markers",
-        "expected_root_ids": ["0", "1", "2"],
+        "expected_comment_ids": ["0", "1", "2"],
         "expected_state_by_root": {"0": "active", "1": "active", "2": "active"},
         "markdown": (
             '# [A]{.comment-start id="0" author="A" date="2026-01-03T00:00:00Z"}'
@@ -74,7 +74,7 @@ EDGE_CASES = [
     },
     {
         "name": "resolved_root_comment",
-        "expected_root_ids": ["70"],
+        "expected_comment_ids": ["70"],
         "expected_state_by_root": {"70": "resolved"},
         "markdown": (
             "Root [resolved]{.comment-start id=\"70\" author=\"A\" date=\"2026-01-04T00:00:00Z\" state=\"resolved\"}"
@@ -83,7 +83,7 @@ EDGE_CASES = [
     },
     {
         "name": "mixed_root_states",
-        "expected_root_ids": ["71", "72"],
+        "expected_comment_ids": ["71", "72"],
         "expected_state_by_root": {"71": "resolved", "72": "active"},
         "markdown": (
             "A [resolved]{.comment-start id=\"71\" author=\"A\" date=\"2026-01-05T00:00:00Z\" state=\"resolved\"}"
@@ -94,7 +94,7 @@ EDGE_CASES = [
     },
     {
         "name": "invalid_state_defaults_active",
-        "expected_root_ids": ["73"],
+        "expected_comment_ids": ["73"],
         "expected_state_by_root": {"73": "active"},
         "markdown": (
             "Root [invalid]{.comment-start id=\"73\" author=\"A\" date=\"2026-01-06T00:00:00Z\" state=\"banana\"}"
@@ -149,17 +149,17 @@ class TestEdgeRoundtrips(unittest.TestCase):
         errors: list[str] = []
         text_mismatch_diffs: dict[str, str] = {}
 
-        expected_root_ids = case["expected_root_ids"]
+        expected_comment_ids = case["expected_comment_ids"]
         expected_state_by_root = case.get("expected_state_by_root") or {
-            cid: "active" for cid in expected_root_ids
+            cid: "active" for cid in expected_comment_ids
         }
-        if seed_snapshot.comment_ids_order != expected_root_ids:
+        if seed_snapshot.comment_ids_order != expected_comment_ids:
             errors.append(
-                f"Unexpected seed root IDs for case {case['name']}. "
-                f"expected={expected_root_ids} actual={seed_snapshot.comment_ids_order}"
+                f"Unexpected seed comment IDs for case {case['name']}. "
+                f"expected={expected_comment_ids} actual={seed_snapshot.comment_ids_order}"
             )
 
-        for comment_id in expected_root_ids:
+        for comment_id in expected_comment_ids:
             expected_state = expected_state_by_root.get(comment_id, "active") == "resolved"
             actual_state = bool(seed_snapshot.resolved_by_id.get(comment_id, False))
             if expected_state != actual_state:
@@ -170,13 +170,14 @@ class TestEdgeRoundtrips(unittest.TestCase):
 
         if roundtrip_snapshot.comment_ids_order != seed_snapshot.comment_ids_order:
             errors.append(
-                "Roundtrip root IDs differ from seed docx roots. "
+                "Roundtrip comment IDs differ from seed docx comments. "
                 f"seed={seed_snapshot.comment_ids_order} roundtrip={roundtrip_snapshot.comment_ids_order}"
             )
 
-        if roundtrip_snapshot.parent_map:
+        if roundtrip_snapshot.parent_map != seed_snapshot.parent_map:
             errors.append(
-                f"Roundtrip parent map must be empty after flattening but got: {roundtrip_snapshot.parent_map}"
+                "Roundtrip parent map drift. "
+                f"expected={seed_snapshot.parent_map} actual={roundtrip_snapshot.parent_map}"
             )
 
         seed_anchor_set = set(seed_snapshot.anchor_ids_order)
@@ -204,30 +205,36 @@ class TestEdgeRoundtrips(unittest.TestCase):
                     f"expected={expected_state} actual={actual_state}"
                 )
 
-        roundtrip_id_set = set(roundtrip_snapshot.comment_ids_order)
+        expected_anchor_ids = {cid for cid in seed_snapshot.comment_ids_order if cid not in seed_snapshot.parent_map}
         for label, observed_ids in [
             ("anchor", set(roundtrip_snapshot.anchor_ids_order)),
             ("range-start", set(roundtrip_snapshot.range_start_ids)),
             ("range-end", set(roundtrip_snapshot.range_end_ids)),
             ("commentReference", set(roundtrip_snapshot.reference_ids)),
         ]:
-            missing = sorted(roundtrip_id_set - observed_ids, key=lambda value: (len(value), value))
-            unexpected = sorted(observed_ids - roundtrip_id_set, key=lambda value: (len(value), value))
+            missing = sorted(expected_anchor_ids - observed_ids, key=lambda value: (len(value), value))
+            unexpected = sorted(observed_ids - expected_anchor_ids, key=lambda value: (len(value), value))
             if missing:
                 errors.append(f"Roundtrip missing {label} IDs for comments: {missing}")
             if unexpected:
                 errors.append(f"Roundtrip has unexpected {label} IDs not in comments.xml: {unexpected}")
 
-        if middle_snapshot.parent_by_id:
+        expected_middle_parent_map = {
+            child_id: parent_id
+            for child_id, parent_id in seed_snapshot.parent_map.items()
+            if child_id in middle_snapshot.start_ids_order and parent_id in middle_snapshot.start_ids_order
+        }
+        if middle_snapshot.parent_by_id != expected_middle_parent_map:
             errors.append(
-                "Seed docx -> markdown should not reintroduce threaded parent attributes, "
-                f"but found: {middle_snapshot.parent_by_id}"
+                "Seed docx -> markdown parent attributes drift. "
+                f"expected={expected_middle_parent_map} actual={middle_snapshot.parent_by_id}"
             )
 
-        if middle_snapshot.root_ids_order != seed_snapshot.comment_ids_order:
+        seed_root_ids = [cid for cid in seed_snapshot.comment_ids_order if cid not in seed_snapshot.parent_map]
+        if middle_snapshot.root_ids_order != seed_root_ids:
             errors.append(
                 "Intermediate markdown root order mismatch. "
-                f"expected={seed_snapshot.comment_ids_order} actual={middle_snapshot.root_ids_order}"
+                f"expected={seed_root_ids} actual={middle_snapshot.root_ids_order}"
             )
 
         for comment_id in seed_snapshot.comment_ids_order:
@@ -244,13 +251,7 @@ class TestEdgeRoundtrips(unittest.TestCase):
                     seed_node.text, roundtrip_node.text, f"{case['name']}:{comment_id}"
                 )
 
-        threaded_root_ids = set(seed_snapshot.parent_map.values())
-        for comment_id in seed_snapshot.comment_ids_order:
-            if comment_id in threaded_root_ids:
-                continue
-            seed_node = seed_snapshot.comments_by_id.get(comment_id)
-            if seed_node is not None and "Reply from:" in (seed_node.text or ""):
-                continue
+        for comment_id in seed_root_ids:
             expected_anchor_text = normalize_anchor_text(seed_snapshot.anchor_text_by_id.get(comment_id, ""))
             actual_anchor_text = normalize_anchor_text(roundtrip_snapshot.anchor_text_by_id.get(comment_id, ""))
             if expected_anchor_text != actual_anchor_text:
@@ -300,7 +301,7 @@ class TestEdgeRoundtrips(unittest.TestCase):
                         f"expected={expected_durable_id} actual={actual_durable_id}"
                     )
 
-        expected_resolved_root_ids = sorted(
+        expected_resolved_comment_ids = sorted(
             [
                 cid
                 for cid in seed_snapshot.comment_ids_order
@@ -308,8 +309,8 @@ class TestEdgeRoundtrips(unittest.TestCase):
             ],
             key=lambda value: (len(value), value),
         )
-        if expected_resolved_root_ids:
-            expected_resolved_count = len(expected_resolved_root_ids)
+        if expected_resolved_comment_ids:
+            expected_resolved_count = len(expected_resolved_comment_ids)
             actual_resolved_count = len(
                 [cid for cid in seed_snapshot.comment_ids_order if bool(roundtrip_snapshot.resolved_by_id.get(cid, False))]
             )
@@ -350,15 +351,15 @@ class TestEdgeRoundtrips(unittest.TestCase):
                     errors.append(f"Roundtrip missing state-supporting package component: {label}")
 
             if seed_snapshot.has_people:
-                expected_root_authors = sorted(
+                expected_authors = sorted(
                     {
                         (seed_snapshot.comments_by_id.get(cid).author or "").strip()
                         for cid in seed_snapshot.comment_ids_order
                         if seed_snapshot.comments_by_id.get(cid)
                     }
                 )
-                expected_root_authors = [author for author in expected_root_authors if author]
-                for author in expected_root_authors:
+                expected_authors = [author for author in expected_authors if author]
+                for author in expected_authors:
                     expected_provider = (seed_snapshot.people_presence_provider_by_author.get(author) or "").strip()
                     expected_user = (seed_snapshot.people_presence_user_by_author.get(author) or "").strip()
                     if not (expected_provider or expected_user):
@@ -443,7 +444,7 @@ class TestEdgeRoundtrips(unittest.TestCase):
                 )
             if missing_root_para_ids:
                 errors.append(
-                    "Roundtrip roots missing paraId mapping required for Word state resolution: "
+                    "Roundtrip comments missing paraId mapping required for Word state resolution: "
                     f"{sorted(missing_root_para_ids, key=lambda value: (len(value), value))}"
                 )
 
@@ -457,13 +458,35 @@ class TestEdgeRoundtrips(unittest.TestCase):
             )
             if missing_in_extended:
                 errors.append(
-                    "Roundtrip root paraIds missing from commentsExtended.xml: "
+                    "Roundtrip comment paraIds missing from commentsExtended.xml: "
                     f"{missing_in_extended}"
                 )
             if missing_in_ids:
                 errors.append(
-                    "Roundtrip root paraIds missing from commentsIds.xml: "
+                    "Roundtrip comment paraIds missing from commentsIds.xml: "
                     f"{missing_in_ids}"
+                )
+
+            expected_parent_para_ids = sorted(
+                [
+                    roundtrip_snapshot.comments_by_id[parent_id].para_id
+                    for parent_id in roundtrip_snapshot.parent_map.values()
+                    if parent_id in roundtrip_snapshot.comments_by_id and roundtrip_snapshot.comments_by_id[parent_id].para_id
+                ],
+                key=lambda value: (len(value), value),
+            )
+            missing_parent_para_ids = sorted(
+                [
+                    para_id
+                    for para_id in expected_parent_para_ids
+                    if para_id not in set(roundtrip_snapshot.comments_extended_parent_para_ids)
+                ],
+                key=lambda value: (len(value), value),
+            )
+            if missing_parent_para_ids:
+                errors.append(
+                    "Roundtrip parent paraIds missing from commentsExtended.xml paraIdParent entries: "
+                    f"{missing_parent_para_ids}"
                 )
 
             if comments_ids_para_ids:
@@ -499,7 +522,7 @@ class TestEdgeRoundtrips(unittest.TestCase):
                 original_snapshot=seed_snapshot,
                 markdown_snapshot=middle_snapshot,
                 roundtrip_snapshot=roundtrip_snapshot,
-                expected_flatten={"case": case["name"], "expected_root_ids": expected_root_ids},
+                expected_flatten={"case": case["name"], "expected_comment_ids": expected_comment_ids},
                 command_logs=command_logs,
                 errors=errors,
                 text_mismatch_diffs=text_mismatch_diffs,

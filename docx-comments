@@ -2188,20 +2188,64 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args, card_b
     if not ordered_started_ids:
         ordered_started_ids = list(seen_order)
 
+    invalid_parent_issues = []
     valid_parent_by_id = {}
     started_id_set = set(ordered_started_ids)
     for child_id in ordered_started_ids:
         parent_id = (parent_by_id.get(child_id) or "").strip()
         # Accept threading when IDs are present in extracted comment set,
         # including card-only reply comments that have no inline markers.
-        if (
-            not parent_id
-            or parent_id == child_id
-            or parent_id not in started_id_set
-        ):
+        if not parent_id:
+            continue
+        if parent_id == child_id:
+            invalid_parent_issues.append(f"comment {child_id} cannot be its own parent")
+            continue
+        if parent_id not in started_id_set:
+            invalid_parent_issues.append(
+                f"comment {child_id} references unknown parent {parent_id}"
+            )
             continue
         valid_parent_by_id[child_id] = parent_id
         add_child(parent_id, child_id)
+
+    visit_state = {}
+    cycle_issues = []
+
+    def detect_cycle(comment_id, stack):
+        state = visit_state.get(comment_id, 0)
+        if state == 1:
+            if comment_id in stack:
+                idx = stack.index(comment_id)
+                cycle = stack[idx:] + [comment_id]
+            else:
+                cycle = stack + [comment_id]
+            cycle_issues.append(" -> ".join(cycle))
+            return
+        if state == 2:
+            return
+
+        visit_state[comment_id] = 1
+        stack.append(comment_id)
+        parent_id = valid_parent_by_id.get(comment_id)
+        if parent_id:
+            detect_cycle(parent_id, stack)
+        stack.pop()
+        visit_state[comment_id] = 2
+
+    for cid in ordered_started_ids:
+        if cid in valid_parent_by_id and visit_state.get(cid, 0) == 0:
+            detect_cycle(cid, [])
+
+    if invalid_parent_issues or cycle_issues:
+        issues = []
+        issues.extend(invalid_parent_issues)
+        for cycle in cycle_issues:
+            issues.append(f"thread cycle detected: {cycle}")
+        raise ValueError(
+            "Invalid comment thread relationships in markdown cards/spans.\n"
+            + "\n".join([f"- {issue}" for issue in issues])
+            + "\n- Fix parent IDs so every reply points to an existing comment and no cycles exist."
+        )
 
     flattened_by_id = {}
     for cid in ordered_started_ids:
@@ -2225,7 +2269,20 @@ def extract_comment_texts_from_markdown(md_path: Path, pandoc_extra_args, card_b
                     "user_id": user_id,
                 }
 
+    text_by_id = {}
+    author_by_id = {}
+    date_by_id = {}
+    for cid in ordered_started_ids:
+        meta = meta_by_id.get(cid, {})
+        text_by_id[cid] = normalize_markdown_comment_text(own_text_by_id.get(cid) or "")
+        author_by_id[cid] = (meta.get("author") or "").strip()
+        date_by_id[cid] = (meta.get("date") or "").strip()
+
     return {
+        "ordered_ids": ordered_started_ids,
+        "text_by_id": text_by_id,
+        "author_by_id": author_by_id,
+        "date_by_id": date_by_id,
         "flattened_by_id": flattened_by_id,
         "parent_by_id": valid_parent_by_id,
         "child_ids": child_ids,
@@ -2266,49 +2323,80 @@ def append_comment_paragraph(
         t.text = text
 
 
-def rewrite_comment_bodies_from_markdown(docx_dir: Path, comment_text_by_id, root_ids):
+def topological_comment_order(ordered_ids, parent_by_id):
+    pending = [str(cid) for cid in ordered_ids or [] if str(cid)]
+    pending_set = set(pending)
+    emitted = []
+    while pending_set:
+        progressed = False
+        for cid in pending:
+            if cid not in pending_set:
+                continue
+            parent_id = str((parent_by_id or {}).get(cid) or "").strip()
+            if parent_id and parent_id in pending_set:
+                continue
+            emitted.append(cid)
+            pending_set.remove(cid)
+            progressed = True
+        if progressed:
+            continue
+        # Should be unreachable after cycle validation, but keep deterministic fallback.
+        for cid in pending:
+            if cid in pending_set:
+                emitted.append(cid)
+                pending_set.remove(cid)
+    return emitted
+
+
+def rewrite_comments_from_markdown_threaded(
+    docx_dir: Path,
+    ordered_ids,
+    text_by_id,
+    author_by_id,
+    date_by_id,
+    parent_by_id,
+):
     comments_path = docx_dir / "word" / "comments.xml"
-    if not comments_path.exists() or not comment_text_by_id or not root_ids:
+    if not comments_path.exists() or not ordered_ids:
         return 0
 
     tree, root = read_xml(comments_path)
-    changed = 0
-    root_set = {str(cid) for cid in root_ids}
+    changed = False
 
-    for comment in root.findall(f".//{{{W_NS}}}comment"):
-        cid = get_attr_local(comment, "id")
-        if cid is None or cid not in root_set or cid not in comment_text_by_id:
-            continue
+    for child in list(root):
+        if local_name(child.tag) == "comment":
+            root.remove(child)
+            changed = True
 
-        for attr_name in list(comment.attrib.keys()):
-            if attr_name == "parent" or attr_name.endswith("}parent"):
-                del comment.attrib[attr_name]
+    ordered = topological_comment_order(ordered_ids, parent_by_id)
+    for cid in ordered:
+        comment = ET.SubElement(root, f"{{{W_NS}}}comment")
+        comment.set(f"{{{W_NS}}}id", str(cid))
 
-        raw = comment_text_by_id.get(cid, "").strip()
+        author = str((author_by_id or {}).get(cid) or "").strip()
+        if author:
+            comment.set(f"{{{W_NS}}}author", author)
+
+        date = str((date_by_id or {}).get(cid) or "").strip()
+        if date:
+            comment.set(f"{{{W_NS}}}date", date)
+
+        comment.set(f"{{{W_NS}}}initials", "DC")
+
+        parent_id = str((parent_by_id or {}).get(cid) or "").strip()
+        if parent_id and parent_id != str(cid):
+            comment.set(f"{{{W15_NS}}}parentId", parent_id)
+
+        raw = normalize_markdown_comment_text((text_by_id or {}).get(cid) or "")
         lines = raw.split("\n") if raw else [""]
-
-        first_existing_p = comment.find(f".//{{{W_NS}}}p")
-        first_paragraph_attrs = {}
-        if first_existing_p is not None:
-            first_paragraph_attrs = dict(first_existing_p.attrib)
-
-        for child in list(comment):
-            comment.remove(child)
 
         first = True
         for line in lines:
-            append_comment_paragraph(
-                comment,
-                line,
-                with_annotation_ref=first,
-                paragraph_attrs=first_paragraph_attrs if first else None,
-            )
+            append_comment_paragraph(comment, line, with_annotation_ref=first)
             first = False
-        changed += 1
 
-    if changed:
-        write_xml(tree, comments_path)
-    return changed
+    write_xml(tree, comments_path)
+    return 1 if (changed or ordered) else 0
 
 
 def generate_unique_para_id(seed: str, used_para_ids):
@@ -2488,22 +2576,20 @@ def load_comments_ids_durable_map(docx_dir: Path):
     return para_to_durable, used_durable_ids
 
 
-def rewrite_root_comments_extended_state(
+def rewrite_comments_extended_state(
     docx_dir: Path,
-    root_ids,
+    ordered_ids,
+    parent_by_id,
     state_by_id,
     para_by_id=None,
     durable_by_id=None,
     presence_by_author=None,
 ):
     comments_path = docx_dir / "word" / "comments.xml"
-    if not comments_path.exists() or not root_ids:
+    if not comments_path.exists() or not ordered_ids:
         return 0
 
     tree, root = read_xml(comments_path)
-    root_set = {str(cid) for cid in root_ids}
-    root_meta_by_id = {}
-    root_order = []
     changed_comments_xml = False
     authors = set()
 
@@ -2511,7 +2597,12 @@ def rewrite_root_comments_extended_state(
         changed_comments_xml = True
 
     used_para_ids = set()
+    comments_by_id = {}
     for comment in root.findall(f".//{{{W_NS}}}comment"):
+        cid = get_attr_local(comment, "id")
+        if cid is None:
+            continue
+        comments_by_id[cid] = comment
         for attr_name in list(comment.attrib.keys()):
             if attr_name == "state" or attr_name.endswith("}state"):
                 del comment.attrib[attr_name]
@@ -2525,17 +2616,19 @@ def rewrite_root_comments_extended_state(
                 used_para_ids.add(p_para_id)
 
     existing_durable_by_para, used_durable_ids = load_comments_ids_durable_map(docx_dir)
+    ordered = [cid for cid in topological_comment_order(ordered_ids, parent_by_id) if cid in comments_by_id]
+    if not ordered:
+        return 0
 
-    for comment in root.findall(f".//{{{W_NS}}}comment"):
-        cid = get_attr_local(comment, "id")
-        if cid is None or cid not in root_set:
-            continue
+    comment_meta_by_id = {}
+    for cid in ordered:
+        comment = comments_by_id[cid]
         paragraphs = comment.findall(f"./{{{W_NS}}}p")
         if not paragraphs:
-            thread_p = ET.SubElement(comment, f"{{{W_NS}}}p")
+            append_comment_paragraph(comment, "", with_annotation_ref=True)
+            paragraphs = comment.findall(f"./{{{W_NS}}}p")
             changed_comments_xml = True
-        else:
-            thread_p = paragraphs[-1]
+        thread_p = paragraphs[-1]
 
         preferred_para_id = str((para_by_id or {}).get(cid) or "").strip()
         para_id = get_attr_local(thread_p, "paraId") or get_attr_local(comment, "paraId")
@@ -2550,30 +2643,29 @@ def rewrite_root_comments_extended_state(
             changed_comments_xml = True
         else:
             used_para_ids.add(para_id)
+
         durable_id = str((durable_by_id or {}).get(cid) or "").strip() or existing_durable_by_para.get(para_id)
         if not durable_id:
             durable_id = generate_unique_durable_id(f"durable-{para_id}", used_durable_ids)
         else:
             used_durable_ids.add(durable_id)
+
         author = (get_attr_local(comment, "author") or "").strip()
         if author:
             authors.add(author)
-        root_meta_by_id[cid] = {
+
+        comment_meta_by_id[cid] = {
             "para_id": para_id,
             "durable_id": durable_id,
             "date": get_attr_local(comment, "date") or "",
         }
-        root_order.append(cid)
 
     if changed_comments_xml:
         write_xml(tree, comments_path)
 
-    if not root_order:
-        return 0
-
     comments_ext_root = ET.Element(f"{{{W15_NS}}}commentsEx")
-    for cid in root_order:
-        meta = root_meta_by_id.get(cid) or {}
+    for cid in ordered:
+        meta = comment_meta_by_id.get(cid) or {}
         para_id = meta.get("para_id")
         if not para_id:
             continue
@@ -2581,11 +2673,17 @@ def rewrite_root_comments_extended_state(
         entry = ET.SubElement(comments_ext_root, f"{{{W15_NS}}}commentEx")
         entry.set(f"{{{W15_NS}}}paraId", para_id)
         entry.set(f"{{{W15_NS}}}done", "1" if state_token == "resolved" else "0")
+        parent_id = str((parent_by_id or {}).get(cid) or "").strip()
+        if parent_id:
+            parent_meta = comment_meta_by_id.get(parent_id) or {}
+            parent_para_id = str(parent_meta.get("para_id") or "").strip()
+            if parent_para_id:
+                entry.set(f"{{{W15_NS}}}paraIdParent", parent_para_id)
 
     comments_ids_root = ET.Element(f"{{{W16CID_NS}}}commentsIds")
     comments_extensible_root = ET.Element(f"{{{W16CEX_NS}}}commentsExtensible")
-    for cid in root_order:
-        meta = root_meta_by_id.get(cid) or {}
+    for cid in ordered:
+        meta = comment_meta_by_id.get(cid) or {}
         para_id = meta.get("para_id")
         durable_id = meta.get("durable_id")
         date_utc = meta.get("date") or ""
@@ -2619,7 +2717,7 @@ def rewrite_root_comments_extended_state(
     ct_changed |= ensure_comments_extensible_content_type(docx_dir)
     ct_changed |= ensure_people_content_type(docx_dir)
 
-    return 1 if (changed_comments_xml or rel_changed or ct_changed or root_order) else 0
+    return 1 if (changed_comments_xml or rel_changed or ct_changed or ordered) else 0
 
 
 def word_story_xml_candidates(docx_dir: Path):
@@ -3182,7 +3280,7 @@ def convert_md_to_docx(in_md: Path, out_docx: Path, pandoc_extra_args):
             extra_args=pandoc_extra_args,
             cwd=in_md.parent,
         )
-    if not comment_data or not comment_data.get("flattened_by_id"):
+    if not comment_data or not comment_data.get("ordered_ids"):
         return
 
     with tempfile.TemporaryDirectory(prefix=".docx-comments-md2docx-", dir=temp_dir_root_for(in_md)) as tmp:
@@ -3190,21 +3288,24 @@ def convert_md_to_docx(in_md: Path, out_docx: Path, pandoc_extra_args):
         unpacked = tmp_dir / "docx"
         unpacked.mkdir(parents=True, exist_ok=True)
         extract_docx(out_docx, unpacked)
-        changed = rewrite_comment_bodies_from_markdown(
+        changed = rewrite_comments_from_markdown_threaded(
             unpacked,
-            comment_data["flattened_by_id"],
-            comment_data["root_ids"],
+            comment_data.get("ordered_ids", []),
+            comment_data.get("text_by_id", {}),
+            comment_data.get("author_by_id", {}),
+            comment_data.get("date_by_id", {}),
+            comment_data.get("parent_by_id", {}),
         )
-        pruned = prune_child_comment_artifacts(unpacked, comment_data["child_ids"])
-        state_updated = rewrite_root_comments_extended_state(
+        state_updated = rewrite_comments_extended_state(
             unpacked,
-            comment_data["root_ids"],
+            comment_data.get("ordered_ids", []),
+            comment_data.get("parent_by_id", {}),
             comment_data.get("state_by_id", {}),
             comment_data.get("para_by_id", {}),
             comment_data.get("durable_by_id", {}),
             comment_data.get("presence_by_author", {}),
         )
-        if not changed and not pruned and not state_updated:
+        if not changed and not state_updated:
             return
         patched_docx = tmp_dir / "patched.docx"
         pack_docx(unpacked, patched_docx)
@@ -3240,7 +3341,7 @@ def build_parser():
         prog=os.environ.get("DOCX_COMMENTS_PROG") or (Path(sys.argv[0]).name or "docx-comments"),
         description=(
             "Convert .docx <-> markdown while preserving comments. "
-            "Threaded Word comments are flattened into one comment body (with author/date lines)."
+            "Threaded Word comments are reconstructed as native reply threads in .docx output."
         ),
     )
     parser.add_argument("input", type=Path, help="Input file (.docx or markdown)")

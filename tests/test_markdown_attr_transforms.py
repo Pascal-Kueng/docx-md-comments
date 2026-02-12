@@ -394,3 +394,50 @@ class TestMarkdownAttrTransforms(unittest.TestCase):
         self.assertNotEqual(end_pos, -1)
         self.assertNotEqual(card_pos, -1)
         self.assertLess(end_pos, card_pos)
+
+    def test_extract_comments_rejects_unknown_parent(self) -> None:
+        extract_comments = self.converter_mod["extract_comment_texts_from_markdown"]
+        work_dir = Path(tempfile.mkdtemp(prefix="ast-parent-unknown-", dir="/tmp"))
+        md_path = work_dir / "input.md"
+        md_path.write_text(
+            (
+                "==///c1.START///==anchor==///c1.END///==\n\n"
+                "> [!COMMENT c1: Alice (active)]\n"
+                '> <!--CARD_META{#c1 "author":"Alice","date":"2026-01-01T00:00:00Z","state":"active"}-->\n'
+                "> root body\n"
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            extract_comments(
+                md_path,
+                pandoc_extra_args=None,
+                card_by_id={
+                    "c1": {"author": "Alice", "state": "active", "text": "root body"},
+                    "c2": {"author": "Bob", "state": "active", "parent": "c99", "text": "reply body"},
+                },
+            )
+        message = str(ctx.exception)
+        self.assertIn("unknown parent", message)
+        self.assertIn("c99", message)
+
+    def test_extract_comments_rejects_parent_cycle(self) -> None:
+        extract_comments = self.converter_mod["extract_comment_texts_from_markdown"]
+        work_dir = Path(tempfile.mkdtemp(prefix="ast-parent-cycle-", dir="/tmp"))
+        md_path = work_dir / "input.md"
+        md_path.write_text("Cycle test.\n", encoding="utf-8")
+
+        with self.assertRaises(ValueError) as ctx:
+            extract_comments(
+                md_path,
+                pandoc_extra_args=None,
+                card_by_id={
+                    "c1": {"author": "Alice", "state": "active", "parent": "c2", "text": "A"},
+                    "c2": {"author": "Bob", "state": "active", "parent": "c1", "text": "B"},
+                },
+            )
+        message = str(ctx.exception)
+        self.assertIn("cycle", message)
+        self.assertIn("c1", message)
+        self.assertIn("c2", message)

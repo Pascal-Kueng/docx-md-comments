@@ -10,9 +10,9 @@ Core requirements:
 
 - Keep comment anchors and text intact.
 - Reconstruct comments from markdown spans.
-- Flatten threaded replies into root comment bodies in Word output.
-- Preserve root comment state (`active` vs `resolved`).
-- Avoid duplicate standalone reply comments after flattening.
+- Reconstruct threaded replies as native Word comment threads in output.
+- Preserve comment state (`active` vs `resolved`) for roots and replies.
+- Preserve reply comment state and parent linkage.
 - Match Microsoft Word behavior (OnlyOffice parity is useful but not sufficient).
 
 ## Repository map
@@ -80,12 +80,11 @@ Canonical span-ID rule:
 ## Roundtrip invariants that must hold
 
 1. Original root comment IDs survive roundtrip with same root order.
-2. Child thread comments do not survive as standalone comments.
-3. Flattened root comment text contains reply blocks with author/date separators.
-4. Every roundtrip root has anchor/start/end/reference IDs in story XML.
-5. Anchor span text for roots remains equivalent (normalized comparison).
-6. `commentsExtended.xml` exists in roundtrip output and root states are preserved.
-7. `commentsIds.xml` does not reintroduce orphaned child thread artifacts.
+2. Child thread comments survive as threaded reply comments with valid `parentId`/`paraIdParent`.
+3. Every roundtrip root has anchor/start/end/reference IDs in story XML.
+4. Anchor span text for roots remains equivalent (normalized comparison).
+5. `commentsExtended.xml` exists in roundtrip output and states are preserved.
+6. `commentsIds.xml` and `commentsExtensible.xml` cover all roundtrip comments.
 8. `commentsExtensible.xml` and `people.xml` are present when needed for state fidelity in Word.
 9. For multi-paragraph comments, roundtrip thread `paraId` equals the last comment paragraph `paraId`.
 10. Placeholder shape image markdown artifacts are removed.
@@ -102,12 +101,11 @@ Do not reintroduce these failure patterns:
 - Never inject heading/title content from `docProps/core.xml` to "help" anchors.
 - This previously caused duplicate headings and first-line instability.
 
-3. Partial pruning of child artifacts.
-- If flattening removes child comments, prune child nodes across:
-  - story anchors/references
-  - `comments.xml`
-  - `commentsExtended.xml`
-  - `commentsIds.xml` (when present)
+3. Breaking thread metadata parity.
+- When writing threaded output, ensure children are present in:
+  - `comments.xml` with `parentId`
+  - `commentsExtended.xml` with `paraIdParent`
+  - `commentsIds.xml` / `commentsExtensible.xml` with durable mappings
 
 4. Over-broad markdown parent assignment.
 - Only trust parent-child links for IDs confirmed as real `.comment-start` spans.
@@ -171,11 +169,10 @@ Run before merging behavior changes:
 - Verifies code/literal fake marker text is not modified while real comment spans are.
 
 3. Manual inspection in Word for fixture output:
-- Comment count parity for roots.
+- Comment count parity for all comments.
 - No dropped first comment anchor.
-- Replies flattened into roots.
-- Resolved/active statuses preserved.
-- Specifically verify threaded roots (roots that had replies pre-flattening) preserve resolved state.
+- Replies appear as native nested threads.
+- Resolved/active statuses preserved (roots and replies).
 
 4. If tests fail, inspect the generated `failure_bundle` path from test output:
 - `original_snapshot.json`
@@ -198,7 +195,7 @@ When changing comment logic, update both converter and tests in the same PR:
 ## Current design status (Feb 2026)
 
 - Root comment state is parsed from Word package metadata and roundtripped through markdown.
-- Root/reply flattening remains ID-based and child standalone artifacts are pruned package-wide.
+- Root/reply threading remains ID-based and is reconstructed package-wide.
 - State reconstruction writes:
   - `commentsExtended.xml` (`w15:done`)
   - `commentsIds.xml` (`paraId` <-> `durableId`)
@@ -211,6 +208,7 @@ When changing comment logic, update both converter and tests in the same PR:
   - no invalid comment-level state attrs in `comments.xml`
   - presenceInfo preservation per author when present in source
   - thread paraId alignment to last paragraph paraId for multi-paragraph comments
+  - parent-map parity (`parentId`) and `paraIdParent` linkage for replies
 - Comment metadata transport now uses Pandoc JSON AST mutation for `.comment-start` attrs (not regex text replacement).
 - AST re-serialization preserves user-requested writer when available (`-t/--to` passthrough).
 - Comment marker IDs are normalized to `id="..."` attributes after AST operations to keep downstream marker repair stable.
