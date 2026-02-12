@@ -8,6 +8,7 @@ from pathlib import Path
 
 COMMENT_START_RE = re.compile(r"\{\.comment-start(?P<attrs>[^}]*)\}", re.DOTALL)
 KV_ATTR_RE = re.compile(r'([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"')
+CARD_HIDDEN_META_RE = re.compile(r"<!--\s*(?:DC_META\s*)?(\{.*?\})\s*-->", re.DOTALL)
 INLINE_IMAGE_RE = re.compile(
     r'!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)(?:\s+"(?P<title>[^"]*)")?\)\{(?P<attrs>[^}]*)\}',
     re.DOTALL,
@@ -202,8 +203,50 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
     card_by_id: dict[str, dict[str, str]] = {}
     start_order = 0
 
+    def extract_hidden_meta(blocks) -> dict[str, str]:
+        meta: dict[str, str] = {}
+        for block in blocks or []:
+            if not isinstance(block, dict):
+                continue
+            t = block.get("t")
+            c = block.get("c")
+            if t == "RawBlock" and isinstance(c, list) and len(c) == 2:
+                fmt = str(c[0] or "").strip().lower()
+                raw = str(c[1] or "")
+                if fmt == "html":
+                    match = CARD_HIDDEN_META_RE.search(raw)
+                    if match:
+                        try:
+                            payload = json.loads(match.group(1))
+                        except json.JSONDecodeError:
+                            payload = {}
+                        if isinstance(payload, dict):
+                            for key, value in payload.items():
+                                key_str = str(key or "").strip()
+                                if key_str:
+                                    meta[key_str] = str(value or "").strip()
+                continue
+            if t == "Div" and isinstance(c, list) and len(c) == 2 and isinstance(c[1], list):
+                attr = c[0] if isinstance(c[0], list) else None
+                classes = attr[1] if isinstance(attr, list) and len(attr) == 3 and isinstance(attr[1], list) else []
+                if "comment-card" in classes:
+                    continue
+                nested = extract_hidden_meta(c[1])
+                if nested:
+                    meta.update(nested)
+        return meta
+
     def extract_comment_card_text(blocks) -> str:
         parts = []
+        def is_display_line(text: str) -> bool:
+            line = str(text or "").strip()
+            if not line:
+                return False
+            if line.startswith("[!COMMENT ") and line.endswith("]"):
+                return True
+            if line.startswith("COMMENT ") and ":" in line and line.endswith(")"):
+                return True
+            return False
         for block in blocks or []:
             if not isinstance(block, dict):
                 continue
@@ -211,12 +254,21 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
             c = block.get("c")
             if t in {"Para", "Plain"} and isinstance(c, list):
                 text = inlines_to_text(c)
-                if text:
+                if text and not is_display_line(text):
                     parts.append(text)
             elif t == "Header" and isinstance(c, list) and len(c) >= 3 and isinstance(c[2], list):
                 text = inlines_to_text(c[2])
                 if text:
                     parts.append(text)
+            elif t == "RawBlock" and isinstance(c, list) and len(c) == 2:
+                fmt = str(c[0] or "").strip().lower()
+                raw = str(c[1] or "")
+                if fmt == "html" and CARD_HIDDEN_META_RE.search(raw):
+                    continue
+            elif t == "BlockQuote" and isinstance(c, list):
+                nested = extract_comment_card_text(c)
+                if nested:
+                    parts.append(nested)
             elif t == "Div" and isinstance(c, list) and len(c) == 2 and isinstance(c[1], list):
                 attr = c[0] if isinstance(c[0], list) else None
                 classes = attr[1] if isinstance(attr, list) and len(attr) == 3 and isinstance(attr[1], list) else []
@@ -384,12 +436,15 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
                         for item in kvs:
                             if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str):
                                 meta[item[0]] = item[1]
+                        hidden_meta = extract_hidden_meta(c[1])
+                        merged_meta = dict(hidden_meta)
+                        merged_meta.update({k: v for k, v in meta.items() if str(v or "").strip()})
                         if comment_id:
                             card_by_id[comment_id] = {
-                                "author": str(meta.get("author") or "").strip(),
-                                "date": str(meta.get("date") or "").strip(),
-                                "parent": str(meta.get("parent") or "").strip(),
-                                "state": normalize_state_token(meta.get("state") or ""),
+                                "author": str(merged_meta.get("author") or "").strip(),
+                                "date": str(merged_meta.get("date") or "").strip(),
+                                "parent": str(merged_meta.get("parent") or "").strip(),
+                                "state": normalize_state_token(merged_meta.get("state") or ""),
                                 "text": extract_comment_card_text(c[1]),
                             }
                 walk_blocks(c[1])
@@ -435,12 +490,15 @@ def inspect_markdown_comments(markdown_path: Path) -> MarkdownCommentSnapshot:
             for item in kvs:
                 if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str):
                     meta[item[0]] = item[1]
+            hidden_meta = extract_hidden_meta(c[1])
+            merged_meta = dict(hidden_meta)
+            merged_meta.update({k: v for k, v in meta.items() if str(v or "").strip()})
             if comment_id:
                 card_by_id[comment_id] = {
-                    "author": str(meta.get("author") or "").strip(),
-                    "date": str(meta.get("date") or "").strip(),
-                    "parent": str(meta.get("parent") or "").strip(),
-                    "state": normalize_state_token(meta.get("state") or ""),
+                    "author": str(merged_meta.get("author") or "").strip(),
+                    "date": str(merged_meta.get("date") or "").strip(),
+                    "parent": str(merged_meta.get("parent") or "").strip(),
+                    "state": normalize_state_token(merged_meta.get("state") or ""),
                     "text": extract_comment_card_text(c[1]),
                 }
                 collect_cards(c[1])

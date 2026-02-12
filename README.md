@@ -14,6 +14,10 @@ This tool is intentionally focused on comment-safe conversion:
   - whitespace-tolerant forms like `/// c1 . start ///`
   - backward-compatible legacy forms: `DC_COMMENT(c1.s)` and `{[c1.s]}`
 - `docx -> md`: emits milestone markers in prose for root comments and inserts matching `.comment-card` blocks right after the block that closes the root marker span.
+- Each `.comment-card` is human-readable:
+  - blockquote callout header `>[!COMMENT <id>: <author> (<state>)]`
+  - hidden JSON transport comment `<!--{...}-->` for robust roundtrip-only fields
+  - comment body text
 - Thread replies are represented as nested `.comment-card .comment-reply-card` blocks under their root card (not as extra inline prose markers).
 - Threaded Word replies are flattened into the parent comment body for stable roundtrip output.
 - Comment state is preserved for roots (`active` vs `resolved`).

@@ -199,6 +199,9 @@ class TestMarkdownAttrTransforms(unittest.TestCase):
         div_attr = blocks[1].get("c", [[], []])[0]
         self.assertEqual(div_attr[0], "c1")
         self.assertIn("comment-card", div_attr[1])
+        rendered = md_path.read_text(encoding="utf-8")
+        self.assertIn("!COMMENT c1: Alice (active)", rendered)
+        self.assertIn('<!--{"author":"Alice","date":"2026-01-01T00:00:00Z","state":"active"}-->', rendered)
 
     def test_reply_markers_move_to_cards_only(self) -> None:
         emit_cards = self.converter_mod["emit_milestones_and_cards_ast"]
