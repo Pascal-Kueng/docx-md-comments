@@ -302,7 +302,7 @@ def normalize_state_token(value: str) -> str:
 
 def run_pandoc_json(markdown_path: Path) -> dict:
     cmd = ["pandoc", str(markdown_path), "-f", "markdown", "-t", "json"]
-    out = subprocess.check_output(cmd, text=True)
+    out = subprocess.check_output(cmd, text=True, encoding="utf-8")
     return json.loads(out)
 
 

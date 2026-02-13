@@ -5,6 +5,7 @@ import runpy
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tests.helpers.markdown_inspector import extract_comment_start_attrs
@@ -122,6 +123,23 @@ class TestMarkdownAttrTransforms(unittest.TestCase):
         self.assertTrue(all(not arg.startswith("--to") for arg in filtered))
         self.assertTrue(all(not arg.startswith("--output") for arg in filtered))
         self.assertTrue(all(not arg.startswith("--extract-media") for arg in filtered))
+
+    def test_run_pandoc_json_uses_utf8_decode(self) -> None:
+        run_pandoc_json = self.converter_mod["run_pandoc_json"]
+        fake_doc = '{"pandoc-api-version":[1,23,1],"meta":{},"blocks":[]}'
+
+        with mock.patch("subprocess.check_output", return_value=fake_doc) as check_output:
+            parsed = run_pandoc_json(Path("input.md"), fmt_from="markdown", extra_args=["--wrap=none"])
+
+        self.assertEqual(parsed.get("blocks"), [])
+        self.assertEqual(parsed.get("meta"), {})
+        check_output.assert_called_once()
+        args, kwargs = check_output.call_args
+        self.assertIn("pandoc", args[0][0])
+        self.assertIn("-f", args[0])
+        self.assertIn("markdown", args[0])
+        self.assertTrue(kwargs.get("text"))
+        self.assertEqual(kwargs.get("encoding"), "utf-8")
 
     def test_milestone_tokens_expand_with_flexible_spacing(self) -> None:
         normalize_tokens = self.converter_mod["normalize_milestone_tokens_ast"]

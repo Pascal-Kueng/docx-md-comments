@@ -1753,7 +1753,8 @@ def run_pandoc_json(in_path: Path, fmt_from=None, extra_args=None):
     if extra_args:
         cmd.extend(extra_args)
     cmd.extend(["-t", "json"])
-    out = subprocess.check_output(cmd, text=True)
+    # Pandoc emits UTF-8 JSON; force decoding so Windows locale codecs do not break.
+    out = subprocess.check_output(cmd, text=True, encoding="utf-8")
     return json.loads(out)
 
 
