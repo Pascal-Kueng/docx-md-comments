@@ -21,20 +21,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
-      - name: Install pandoc (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Set up Pandoc
+        uses: r-lib/actions/setup-pandoc@v2
+        with:
+          pandoc-version: "3.6.4"
+
+      - name: Show tool versions
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pandoc
-
-      - name: Install pandoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install pandoc
-
-      - name: Install pandoc (Windows)
-        if: runner.os == 'Windows'
-        run: choco install pandoc --no-progress -y
+          python --version
+          pandoc --version
 
       - name: Install package
         run: |
@@ -45,9 +42,56 @@ jobs:
         run: python -m unittest -q
 
       - name: CLI smoke tests
+        shell: python
         run: |
-          dmc --help
-          docx2md --help
-          md2docx --help
-          d2m --help
-          m2d --help
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import sys
+          import sysconfig
+
+          commands = ["dmc", "docx-comments", "docx2md", "md2docx", "d2m", "m2d"]
+          scripts_dir = Path(sysconfig.get_path("scripts") or "")
+          is_windows = sys.platform.startswith("win")
+
+          def resolve_script(command: str) -> str:
+              candidates = [scripts_dir / command]
+              if is_windows:
+                  candidates.extend(
+                      [
+                          scripts_dir / f"{command}.exe",
+                          scripts_dir / f"{command}.bat",
+                          scripts_dir / f"{command}-script.py",
+                      ]
+                  )
+              for candidate in candidates:
+                  if candidate.exists():
+                      return str(candidate)
+              path_hit = shutil.which(command)
+              if path_hit:
+                  return path_hit
+              raise SystemExit(
+                  f"missing console script: {command}\n"
+                  f"checked scripts dir: {scripts_dir}\n"
+                  f"checked PATH via shutil.which"
+              )
+
+          for command in commands:
+              binary = resolve_script(command)
+              proc = subprocess.run([binary, "--help"], capture_output=True, text=True)
+              if proc.returncode != 0:
+                  raise SystemExit(
+                      f"{command} --help failed with exit {proc.returncode}\n"
+                      f"resolved script: {binary}\n"
+                      f"stdout:\n{proc.stdout}\n"
+                      f"stderr:\n{proc.stderr}"
+                  )
+
+          for args in (["-m", "dmc", "--help"], ["-m", "dmc", "docx2md", "--help"], ["-m", "dmc", "md2docx", "--help"]):
+              proc = subprocess.run([sys.executable, *args], capture_output=True, text=True)
+              if proc.returncode != 0:
+                  raise SystemExit(
+                      f"python {' '.join(args)} failed with exit {proc.returncode}\n"
+                      f"stdout:\n{proc.stdout}\n"
+                      f"stderr:\n{proc.stderr}"
+                  )

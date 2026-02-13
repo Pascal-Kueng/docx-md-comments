@@ -2,6 +2,16 @@
 
 This is a practical checklist to run tests and publish `docx-md-comments`.
 
+## 0) Finalize repository state
+
+Before building artifacts:
+
+- Commit packaging and CLI changes.
+- Confirm the package name in `pyproject.toml` is what you want on PyPI.
+- Ensure licensing is consistent:
+  - `pyproject.toml` declares `Apache-2.0`
+  - repository contains a matching `LICENSE` file
+
 ## 1) Pre-release checks
 
 Run from repository root:
@@ -103,6 +113,10 @@ Back in your build terminal (`.venv-release`), upload to the live registry:
 python -m twine upload dist/*
 ```
 
+Alternative:
+
+- Use Trusted Publishing via GitHub Actions (recommended) instead of manual `twine` upload.
+
 ## 7) Tag and release
 
 ```bash
@@ -133,3 +147,7 @@ In your normal terminal (or using pipx):
 pipx install docx-md-comments
 dmc --help
 ```
+
+Recommended additional verification:
+
+- Run install/CLI checks on macOS, Linux, and Windows.
