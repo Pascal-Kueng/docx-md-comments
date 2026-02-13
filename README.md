@@ -1,21 +1,27 @@
 # docx-md-comments
 
-Takes word documents with comment threads and converts them to markdown that is easily readable by LLMs and humans. The markdown documents can be backconverted into .docx files with nested comment threads fully restored. 
+Convert Word files with comments to Markdown, edit them, and convert back to Word while keeping comment threads intact.
 
-Lossless `.docx <-> .md` comments conversion:
+This tool preserves:
 
 - comment anchors
 - threaded replies
 - active/resolved state
 
-If your workflow is "convert .docx with comments --> edit in markdown using LLMs --> return to Word, restoring remaining (or new) comments or LLM comments", this tool is for that.
+If your workflow is:
 
-## Install
+1. start with a `.docx` that has comments
+2. edit in Markdown (manually or with an LLM)
+3. convert back to `.docx`
 
-### Prerequisites
+then this package is built for that.
+
+## Before You Start
+
+You need:
 
 - Python 3.10+
-- Pandoc available on `PATH`
+- Pandoc installed and available on `PATH`
 
 Install Pandoc:
 
@@ -23,45 +29,81 @@ Install Pandoc:
 - Ubuntu/Debian: `sudo apt-get install pandoc`
 - Windows (PowerShell): `choco install pandoc -y`
 
-### Recommended (isolated): `pipx`
+## Install (Recommended)
+
+Use `pipx` (cleanest option for command-line apps):
 
 ```bash
 pipx install docx-md-comments
 ```
 
-Upgrade later:
+That gives you these commands:
+
+- `dmc`
+- `docx-comments`
+- `docx2md` / `d2m`
+- `md2docx` / `m2d`
+
+## Update To Latest Version
+
+If installed with `pipx`:
 
 ```bash
 pipx upgrade docx-md-comments
 ```
 
-### Alternative: `pip`
+If installed with `pip`:
+
+```bash
+python -m pip install --upgrade docx-md-comments
+```
+
+## Install (Alternative)
+
+If you prefer `pip`:
 
 ```bash
 python -m pip install docx-md-comments
 ```
 
-## Quick usage
+## Quick Start (Most Users)
 
-DOCX -> MD (all of these are equivalent):
+Convert Word to Markdown:
 
 ```bash
 dmc draft.docx
+```
+
+This creates `draft.md`.
+
+Convert Markdown back to Word:
+
+```bash
+dmc draft.md
+```
+
+This creates `draft.docx`.
+
+## More Commands (Optional)
+
+These commands are equivalent; use whichever you prefer.
+
+DOCX -> Markdown:
+
+```bash
 docx-comments draft.docx
 docx2md draft.docx
 d2m draft.docx
 ```
 
-MD -> DOCX (all of these are equivalent):
+Markdown -> DOCX:
 
 ```bash
-dmc draft.md
-docx-comments draft.md
 md2docx draft.md
 m2d draft.md
 ```
 
-### Explicit mode
+### Explicit input/output paths
 
 DOCX -> Markdown:
 
@@ -88,7 +130,7 @@ m2d draft.md -r original.docx -o final.docx
 
 `--ref` maps to Pandoc `--reference-doc`.
 
-### Pass-through Pandoc arguments
+### Pass-through Pandoc arguments (advanced)
 
 Unknown flags are passed through to Pandoc:
 
@@ -99,8 +141,8 @@ dmc md2docx draft.md --reference-doc=template.docx
 
 ## Limitations
 
-- **Tracked Changes:** Word "Tracked Changes" (revisions) are not (yet) preserved through the roundtrip. They are accepted (merged) during the DOCX to Markdown conversion. It is recommended to handle (accept/reject) all tracked changes in Word before conversion, while leaving comments as needed so they can be addressed in Markdown (e.g., by an LLM).
-- **Formatting:** While Pandoc handles most formatting, the primary focus of this tool is the lossless conversion of comment threads. Complex layouts or advanced Word features may not always roundtrip perfectly if they are not supported by the Markdown intermediate format.
+- **Tracked Changes:** Word revisions are not preserved through roundtrip. Resolve them in Word first.
+- **Formatting:** Main focus is preserving comment threads. Very complex Word layouts may not roundtrip perfectly.
 
 ## Help
 
@@ -110,7 +152,7 @@ docx2md --help
 md2docx --help
 ```
 
-## Testing
+## For Contributors: Testing
 
 Run full suite:
 
@@ -129,7 +171,7 @@ make test-roundtrip
 - `artifacts/out_test.md`
 - `artifacts/out_test.docx`
 
-## Report issues
+## Report Issues
 
 Please open bugs/feature requests at:
 
@@ -142,7 +184,7 @@ When reporting a conversion bug, include:
 - expected vs actual behavior (Word view)
 - failing `failure_bundle` path if tests failed
 
-## Technical notes (brief)
+## Technical Notes (Brief)
 
 - Markdown marker style uses `///C<ID>.START///` / `///C<ID>.END///` (with optional `==...==` highlight wrapper).
 - Reply relationships are reconstructed as native Word threads (`commentsExtended.xml` `paraIdParent` + story markers).
