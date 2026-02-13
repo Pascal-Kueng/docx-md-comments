@@ -1,12 +1,14 @@
 # docx-comments-roundtrip
 
-Lossless `.docx <-> .md` conversion focused on **Word comment fidelity**:
+Takes word documents with comment threads and converts them to markdown that is easily readable by LLMs and humans. The markdown documents can be backconverted into .docx files with nested comment threads fully restored. 
+
+Lossless `.docx <-> .md` comments conversion:
 
 - comment anchors
 - threaded replies
 - active/resolved state
 
-If your workflow is "edit in markdown/LLM, then return to Word without breaking comments", this tool is for that.
+If your workflow is "convert .docx with comments --> edit in markdown using LLMs --> return to Word, restoring remaining (or new) comments or LLM comments", this tool is for that.
 
 ## Install
 
@@ -41,9 +43,7 @@ python -m pip install docx-comments-roundtrip
 
 ## Quick usage
 
-### Auto mode
-
-All of these are equivalent:
+DOCX -> MD (all of these are equivalent):
 
 ```bash
 dmt draft.docx
@@ -52,7 +52,7 @@ docx2md draft.docx
 d2m draft.docx
 ```
 
-All of these are equivalent:
+MD -> DOCX (all of these are equivalent):
 
 ```bash
 dmt draft.md
