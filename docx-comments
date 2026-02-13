@@ -7,8 +7,8 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from dmt.cli import main_docx_comments
-from dmt.converter import *  # noqa: F401,F403 - compatibility for runpy-based tests/tools.
+from dmc.cli import main_docx_comments
+from dmc.converter import *  # noqa: F401,F403 - compatibility for runpy-based tests/tools.
 
 if __name__ == "__main__":
     raise SystemExit(main_docx_comments())

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-AI maintainer guide for `docx-comments-roundtrip`.
+AI maintainer guide for `docx-md-comments`.
 
 ## Mission
 
@@ -18,11 +18,11 @@ Core requirements:
 ## Repository map
 
 - `pyproject.toml`: packaging metadata and console script entry points.
-- `src/dmt/converter.py`: core conversion engine (single source of truth for logic).
-- `src/dmt/cli.py`: CLI dispatch (`dmt`, aliases, legacy compatibility).
-- `src/dmt/commands.py`: thin command adapters around converter core.
-- `src/dmt/version.py`: package version.
-- `docx-comments`, `docx2md`, `md2docx`, `dmt`, `d2m`, `m2d`: local shim scripts for repo usage.
+- `src/dmc/converter.py`: core conversion engine (single source of truth for logic).
+- `src/dmc/cli.py`: CLI dispatch (`dmc`, aliases, legacy compatibility).
+- `src/dmc/commands.py`: thin command adapters around converter core.
+- `src/dmc/version.py`: package version.
+- `docx-comments`, `docx2md`, `md2docx`, `dmc`, `d2m`, `m2d`: local shim scripts for repo usage.
 - `tests/test_roundtrip_example.py`: fixture-backed roundtrip parity test.
 - `tests/test_roundtrip_edges.py`: synthetic edge-case roundtrip tests.
 - `tests/test_markdown_attr_transforms.py`: regression tests for AST-based markdown attr transforms.
@@ -191,7 +191,7 @@ Do not reintroduce these failure patterns:
 - Use `TemporaryDirectory(...)` and clean up automatically.
 - Keep `sys.dont_write_bytecode = True` behavior to avoid `__pycache__` sprawl.
 - Validate `pandoc` availability/version at runtime and fail early with clear errors.
-- Keep wrapper/entrypoint layers thin; conversion logic must stay centralized in `src/dmt/converter.py`.
+- Keep wrapper/entrypoint layers thin; conversion logic must stay centralized in `src/dmc/converter.py`.
 - Avoid shell-only wrappers in install path; console scripts must remain cross-platform.
 
 ## Required verification workflow
@@ -228,7 +228,7 @@ Run before merging behavior changes:
 
 When changing comment logic, update both converter and tests in the same PR:
 
-1. Update parser/writer behavior in `src/dmt/converter.py`.
+1. Update parser/writer behavior in `src/dmc/converter.py`.
 2. Extend inspector snapshots if new invariants are introduced.
 3. Add/adjust edge cases in `tests/test_roundtrip_edges.py`.
 4. Ensure fixture parity assertions in `tests/test_roundtrip_example.py` still pass.
@@ -260,4 +260,4 @@ When changing comment logic, update both converter and tests in the same PR:
 - md->docx now normalizes shorthand milestone tokens (`///<id>.START|END///`, optional `==...==` highlight wrapper, spacing tolerant) to canonical comment spans via Pandoc AST before comment extraction.
 - md->docx validates marker integrity before conversion and aborts with clear line-specific errors if root marker pairs are missing/duplicated/unbalanced.
 - Current markdown card transport format is `COMMENT/REPLY` blockquote callouts with inline `CARD_META` HTML comments (no `CARD_START` markers, no fenced Div wrappers, no backward-compat parsing path).
-- Project is now packaged via `pyproject.toml` with console scripts: `dmt`, `docx-comments`, `docx2md`, `md2docx`, `d2m`, `m2d`.
+- Project is now packaged via `pyproject.toml` with console scripts: `dmc`, `docx-comments`, `docx2md`, `md2docx`, `d2m`, `m2d`.

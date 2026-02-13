@@ -41,7 +41,7 @@ python -m pip install dist/*.whl
 Verify CLI entry points:
 
 ```bash
-dmt --help
+dmc --help
 docx2md --help
 md2docx --help
 d2m --help

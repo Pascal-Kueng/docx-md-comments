@@ -1,4 +1,4 @@
-# docx-comments-roundtrip
+# docx-md-comments
 
 Takes word documents with comment threads and converts them to markdown that is easily readable by LLMs and humans. The markdown documents can be backconverted into .docx files with nested comment threads fully restored. 
 
@@ -26,19 +26,19 @@ Install Pandoc:
 ### Recommended (isolated): `pipx`
 
 ```bash
-pipx install docx-comments-roundtrip
+pipx install docx-md-comments
 ```
 
 Upgrade later:
 
 ```bash
-pipx upgrade docx-comments-roundtrip
+pipx upgrade docx-md-comments
 ```
 
 ### Alternative: `pip`
 
 ```bash
-python -m pip install docx-comments-roundtrip
+python -m pip install docx-md-comments
 ```
 
 ## Quick usage
@@ -46,7 +46,7 @@ python -m pip install docx-comments-roundtrip
 DOCX -> MD (all of these are equivalent):
 
 ```bash
-dmt draft.docx
+dmc draft.docx
 docx-comments draft.docx
 docx2md draft.docx
 d2m draft.docx
@@ -55,7 +55,7 @@ d2m draft.docx
 MD -> DOCX (all of these are equivalent):
 
 ```bash
-dmt draft.md
+dmc draft.md
 docx-comments draft.md
 md2docx draft.md
 m2d draft.md
@@ -68,7 +68,7 @@ DOCX -> Markdown:
 ```bash
 docx2md draft.docx -o draft.md
 d2m draft.docx -o draft.md
-dmt docx2md draft.docx -o draft.md
+dmc docx2md draft.docx -o draft.md
 ```
 
 Markdown -> DOCX:
@@ -76,7 +76,7 @@ Markdown -> DOCX:
 ```bash
 md2docx draft.md -o draft.docx
 m2d draft.md -o draft.docx
-dmt md2docx draft.md -o draft.docx
+dmc md2docx draft.md -o draft.docx
 ```
 
 Use a reference Word document for styling:
@@ -94,13 +94,13 @@ Unknown flags are passed through to Pandoc:
 
 ```bash
 docx2md draft.docx -o draft.md --extract-media=media
-dmt md2docx draft.md --reference-doc=template.docx
+dmc md2docx draft.md --reference-doc=template.docx
 ```
 
 ## Help
 
 ```bash
-dmt --help
+dmc --help
 docx2md --help
 md2docx --help
 ```

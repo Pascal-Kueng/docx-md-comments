@@ -15,7 +15,7 @@ Detailed publish commands live in `PUBLISHING.md`.
 Edit both files:
 
 - `pyproject.toml` -> `[project].version`
-- `src/dmt/version.py` -> `__version__`
+- `src/dmc/version.py` -> `__version__`
 
 ## 3) Run checks
 
@@ -53,8 +53,8 @@ Follow `PUBLISHING.md` sections:
 Include:
 
 - highlights / fixes
-- install command: `pipx install docx-comments-roundtrip`
-- upgrade command: `pipx upgrade docx-comments-roundtrip`
+- install command: `pipx install docx-md-comments`
+- upgrade command: `pipx upgrade docx-md-comments`
 - any migration notes (if breaking changes)
 
 ## 7) Post-release verification
@@ -62,8 +62,8 @@ Include:
 In a clean environment:
 
 ```bash
-python -m pip install --upgrade docx-comments-roundtrip
-dmt --help
+python -m pip install --upgrade docx-md-comments
+dmc --help
 ```
 
 Run one real conversion smoke test with a sample `.docx`.

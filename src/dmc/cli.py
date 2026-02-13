@@ -12,23 +12,23 @@ from .version import __version__
 # Keep parity with previous script behavior in stow/symlink environments.
 sys.dont_write_bytecode = True
 
-DMT_HELP = f"""dmt {__version__} - Docx Markdown Threads
+DMC_HELP = f"""dmc {__version__} - Docx Markdown Comments
 
 Lossless bidirectional conversion preserving comment threads.
 
 USAGE:
-    dmt <FILE>                      Auto-detect and convert
-    dmt <COMMAND> [OPTIONS]         Explicit conversion
+    dmc <FILE>                      Auto-detect and convert
+    dmc <COMMAND> [OPTIONS]         Explicit conversion
 
 COMMANDS:
     docx2md (d2m)   Convert DOCX -> Markdown
     md2docx (m2d)   Convert Markdown -> DOCX
 
 AUTO-DETECT:
-    dmt draft.docx                  Creates draft.md
-    dmt draft.md                    Creates draft.docx
+    dmc draft.docx                  Creates draft.md
+    dmc draft.md                    Creates draft.docx
 
-Use 'dmt <command> --help' for more information.
+Use 'dmc <command> --help' for more information.
 """
 
 
@@ -95,22 +95,22 @@ def main_md2docx(argv=None, prog_name=None):
     )
 
 
-def _main_dmt(argv=None):
+def _main_dmc(argv=None):
     args_list = list(sys.argv[1:] if argv is None else argv)
     if not args_list or args_list[0] in {"-h", "--help"}:
-        print(DMT_HELP)
+        print(DMC_HELP)
         return 0
 
     if args_list[0] in {"-V", "--version"}:
-        print(f"dmt {__version__}")
+        print(f"dmc {__version__}")
         return 0
 
     subcmd = args_list[0]
     rest = args_list[1:]
     if subcmd in {"docx2md", "d2m"}:
-        return main_docx2md(rest, prog_name=f"dmt {subcmd}")
+        return main_docx2md(rest, prog_name=f"dmc {subcmd}")
     if subcmd in {"md2docx", "m2d"}:
-        return main_md2docx(rest, prog_name=f"dmt {subcmd}")
+        return main_md2docx(rest, prog_name=f"dmc {subcmd}")
 
     if subcmd in {"threads", "stats", "check", "diff"}:
         print(
@@ -120,7 +120,7 @@ def _main_dmt(argv=None):
         return 2
 
     auto_parser = argparse.ArgumentParser(
-        prog="dmt",
+        prog="dmc",
         description="Auto-detect conversion mode from input extension.",
     )
     auto_parser.add_argument("input", type=Path, help="Input file (.docx or markdown)")
@@ -137,4 +137,4 @@ def main(argv=None):
         return main_docx2md(argv, prog_name=Path(sys.argv[0]).name)
     if invoked in {"md2docx", "m2d"}:
         return main_md2docx(argv, prog_name=Path(sys.argv[0]).name)
-    return _main_dmt(argv)
+    return _main_dmc(argv)

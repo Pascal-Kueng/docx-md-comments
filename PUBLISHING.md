@@ -1,6 +1,6 @@
 # Publishing Checklist
 
-This is a practical checklist to run tests and publish `docx-comments-roundtrip`.
+This is a practical checklist to run tests and publish `docx-md-comments`.
 
 ## 1) Pre-release checks
 
@@ -61,7 +61,7 @@ python -m pip install --force-reinstall dist/*.whl
 Verify CLI entry points:
 
 ```bash
-dmt --help
+dmc --help
 docx-comments --help
 docx2md --help
 md2docx --help
@@ -82,8 +82,8 @@ python -m twine upload --repository testpypi dist/*
 Install from TestPyPI in a fresh env:
 
 ```bash
-python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple docx-comments-roundtrip
-dmt --help
+python -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple docx-md-comments
+dmc --help
 ```
 
 ## 6) Publish to PyPI
@@ -101,8 +101,8 @@ git push origin v<VERSION>
 
 Create a GitHub release and include:
 
-- install command: `pipx install docx-comments-roundtrip`
-- upgrade command: `pipx upgrade docx-comments-roundtrip`
+- install command: `pipx install docx-md-comments`
+- upgrade command: `pipx upgrade docx-md-comments`
 - key changes and any migration notes.
 
 ## 8) Post-release verification
@@ -110,8 +110,8 @@ Create a GitHub release and include:
 In a clean env:
 
 ```bash
-python -m pip install --upgrade docx-comments-roundtrip
-dmt --help
+python -m pip install --upgrade docx-md-comments
+dmc --help
 ```
 
 Run one real conversion sanity check:

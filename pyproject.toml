@@ -3,12 +3,12 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "docx-comments-roundtrip"
+name = "docx-md-comments"
 version = "1.0.0"
 description = "Lossless DOCX <-> Markdown conversion preserving Word comment threads"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{name = "docx-comments-roundtrip maintainers"}]
+authors = [{name = "docx-md-comments maintainers"}]
 license = {file = "LICENSE"}
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
@@ -21,16 +21,16 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pascalkueng/docx-comments-roundtrip"
-Issues = "https://github.com/pascalkueng/docx-comments-roundtrip/issues"
+Homepage = "https://github.com/Pascal-Kueng/docx-md-comments"
+Issues = "https://github.com/Pascal-Kueng/docx-md-comments/issues"
 
 [project.scripts]
-dmt = "dmt.cli:main"
-docx-comments = "dmt.cli:main_docx_comments"
-docx2md = "dmt.cli:main_docx2md"
-md2docx = "dmt.cli:main_md2docx"
-d2m = "dmt.cli:main_docx2md"
-m2d = "dmt.cli:main_md2docx"
+dmc = "dmc.cli:main"
+docx-comments = "dmc.cli:main_docx_comments"
+docx2md = "dmc.cli:main_docx2md"
+md2docx = "dmc.cli:main_md2docx"
+d2m = "dmc.cli:main_docx2md"
+m2d = "dmc.cli:main_md2docx"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

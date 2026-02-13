@@ -16,8 +16,8 @@ test-roundtrip:
 
 roundtrip-example:
 	mkdir -p $(MANUAL_DIR)
-	./docx-comments $(ABS_TEST_IN) -o $(ABS_TEST_MD)
-	./docx-comments $(ABS_TEST_MD) -o $(ABS_TEST_DOCX)
+	./dmc $(ABS_TEST_IN) -o $(ABS_TEST_MD)
+	./dmc $(ABS_TEST_MD) -o $(ABS_TEST_DOCX)
 	@echo "Wrote $(TEST_MD) and $(TEST_DOCX) for manual inspection."
 
 clean-roundtrip-example:
