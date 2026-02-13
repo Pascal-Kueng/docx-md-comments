@@ -2,6 +2,18 @@
 
 Single source of truth for future package updates and releases.
 
+## TL;DR (normal future release)
+
+After version bump + tests, this is the production path:
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+gh release create vX.Y.Z --title "vX.Y.Z" --generate-notes
+```
+
+Publishing the GitHub release triggers `.github/workflows/publish.yml`, which publishes to PyPI automatically (Trusted Publishing / OIDC).
+
 This repository uses Trusted Publishing via GitHub Actions:
 
 - Workflow: `.github/workflows/publish.yml`

@@ -261,3 +261,7 @@ When changing comment logic, update both converter and tests in the same PR:
 - md->docx validates marker integrity before conversion and aborts with clear line-specific errors if root marker pairs are missing/duplicated/unbalanced.
 - Current markdown card transport format is `COMMENT/REPLY` blockquote callouts with inline `CARD_META` HTML comments (no `CARD_START` markers, no fenced Div wrappers, no backward-compat parsing path).
 - Project is now packaged via `pyproject.toml` with console scripts: `dmc`, `docx-comments`, `docx2md`, `md2docx`, `d2m`, `m2d`.
+- Publishing is automated via GitHub Actions Trusted Publishing (`.github/workflows/publish.yml`) using OIDC to PyPI/TestPyPI (`pypa/gh-action-pypi-publish`), not manual `twine`.
+- Production release path: push `vX.Y.Z` tag and publish GitHub Release for that tag; PyPI publish runs automatically from the workflow.
+- Workflow publish steps use `skip-existing: true` so retrospective or repeated release events do not fail on already-uploaded artifacts.
+- `RELEASING.md` is the single release runbook; `PUBLISHING.md` has been retired.
