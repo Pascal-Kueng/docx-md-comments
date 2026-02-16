@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docx-md-comments"
-version = "1.0.0"
+version = "1.0.1"
 description = "Lossless DOCX <-> Markdown conversion preserving Word comment threads"
 readme = "README.md"
 requires-python = ">=3.10"
