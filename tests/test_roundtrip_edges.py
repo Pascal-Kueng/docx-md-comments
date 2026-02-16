@@ -152,6 +152,18 @@ class TestEdgeRoundtrips(unittest.TestCase):
 
         errors: list[str] = []
         text_mismatch_diffs: dict[str, str] = {}
+        for label, snapshot in [("seed", seed_snapshot), ("roundtrip", roundtrip_snapshot)]:
+            compatibility_mode = (snapshot.settings_compatibility_mode or "").strip()
+            compatibility_mode_int = None
+            try:
+                compatibility_mode_int = int(compatibility_mode)
+            except ValueError:
+                compatibility_mode_int = None
+            if compatibility_mode_int is None or compatibility_mode_int < 15:
+                errors.append(
+                    f"{label} settings.xml missing modern compatibility mode for case {case['name']}. "
+                    f"expected>=15 actual={compatibility_mode or '(missing)'}"
+                )
 
         expected_comment_ids = case["expected_comment_ids"]
         expected_state_by_root = case.get("expected_state_by_root") or {

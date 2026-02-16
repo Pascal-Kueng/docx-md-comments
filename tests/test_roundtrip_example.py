@@ -87,6 +87,17 @@ class TestPreregistrationRoundtrip(unittest.TestCase):
 
         errors: list[str] = []
         text_mismatch_diffs: dict[str, str] = {}
+        compatibility_mode = (roundtrip.settings_compatibility_mode or "").strip()
+        compatibility_mode_int = None
+        try:
+            compatibility_mode_int = int(compatibility_mode)
+        except ValueError:
+            compatibility_mode_int = None
+        if compatibility_mode_int is None or compatibility_mode_int < 15:
+            errors.append(
+                "Roundtrip settings.xml missing modern compatibility mode. "
+                f"expected>=15 actual={compatibility_mode or '(missing)'}"
+            )
 
         original_comment_set = set(original.comment_ids_order)
         roundtrip_comment_set = set(roundtrip.comment_ids_order)

@@ -25,6 +25,8 @@ COMMENTS_EXT_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/
 COMMENTS_IDS_REL_TYPE = "http://schemas.microsoft.com/office/2016/09/relationships/commentsIds"
 COMMENTS_EXTENSIBLE_REL_TYPE = "http://schemas.microsoft.com/office/2018/08/relationships/commentsExtensible"
 PEOPLE_REL_TYPE = "http://schemas.microsoft.com/office/2011/relationships/people"
+WORD_COMPAT_URI = "http://schemas.microsoft.com/office/word"
+MIN_WORD_COMPATIBILITY_MODE = 15
 COMMENTS_EXT_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml"
 COMMENTS_IDS_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsIds+xml"
 COMMENTS_EXTENSIBLE_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtensible+xml"
@@ -2545,6 +2547,68 @@ def ensure_comments_xml_state_compatibility(root: ET.Element):
     return changed
 
 
+def ensure_word_settings_modern_compatibility(docx_dir: Path, minimum_mode: int = MIN_WORD_COMPATIBILITY_MODE):
+    settings_path = docx_dir / "word" / "settings.xml"
+    if not settings_path.exists():
+        return False
+
+    tree, root = read_xml(settings_path)
+    changed = False
+
+    compat = None
+    for child in list(root):
+        if local_name(child.tag) == "compat":
+            compat = child
+            break
+    if compat is None:
+        compat = ET.SubElement(root, f"{{{W_NS}}}compat")
+        changed = True
+
+    mode_entries = []
+    for child in list(compat):
+        if local_name(child.tag) != "compatSetting":
+            continue
+        name = (get_attr_local(child, "name") or "").strip()
+        uri = (get_attr_local(child, "uri") or "").strip()
+        if name == "compatibilityMode" and uri == WORD_COMPAT_URI:
+            mode_entries.append(child)
+
+    mode_setting = mode_entries[0] if mode_entries else None
+    for duplicate in mode_entries[1:]:
+        compat.remove(duplicate)
+        changed = True
+
+    desired_mode = str(int(minimum_mode))
+    if mode_setting is None:
+        mode_setting = ET.Element(f"{{{W_NS}}}compatSetting")
+        mode_setting.set(f"{{{W_NS}}}name", "compatibilityMode")
+        mode_setting.set(f"{{{W_NS}}}uri", WORD_COMPAT_URI)
+        mode_setting.set(f"{{{W_NS}}}val", desired_mode)
+        compat.insert(0, mode_setting)
+        changed = True
+    else:
+        if (get_attr_local(mode_setting, "name") or "").strip() != "compatibilityMode":
+            mode_setting.set(f"{{{W_NS}}}name", "compatibilityMode")
+            changed = True
+        if (get_attr_local(mode_setting, "uri") or "").strip() != WORD_COMPAT_URI:
+            mode_setting.set(f"{{{W_NS}}}uri", WORD_COMPAT_URI)
+            changed = True
+
+        current_mode = (get_attr_local(mode_setting, "val") or "").strip()
+        current_mode_int = None
+        try:
+            current_mode_int = int(current_mode)
+        except ValueError:
+            current_mode_int = None
+        if current_mode_int is None or current_mode_int < minimum_mode:
+            mode_setting.set(f"{{{W_NS}}}val", desired_mode)
+            changed = True
+
+    if changed:
+        write_xml(tree, settings_path)
+    return changed
+
+
 def load_comments_ids_durable_map(docx_dir: Path):
     comments_ids_path = docx_dir / "word" / "commentsIds.xml"
     para_to_durable = {}
@@ -3444,37 +3508,39 @@ def convert_md_to_docx(in_md: Path, out_docx: Path, pandoc_extra_args):
             extra_args=pandoc_extra_args,
             cwd=in_md.parent,
         )
-    if not comment_data or not comment_data.get("ordered_ids"):
-        return
-
     with tempfile.TemporaryDirectory(prefix=".docx-comments-md2docx-", dir=temp_dir_root_for(in_md)) as tmp:
         tmp_dir = Path(tmp)
         unpacked = tmp_dir / "docx"
         unpacked.mkdir(parents=True, exist_ok=True)
         extract_docx(out_docx, unpacked)
-        changed = rewrite_comments_from_markdown_threaded(
-            unpacked,
-            comment_data.get("ordered_ids", []),
-            comment_data.get("text_by_id", {}),
-            comment_data.get("author_by_id", {}),
-            comment_data.get("date_by_id", {}),
-            comment_data.get("parent_by_id", {}),
-        )
-        anchor_changed = ensure_thread_reply_anchors(
-            unpacked,
-            comment_data.get("ordered_ids", []),
-            comment_data.get("parent_by_id", {}),
-        )
-        state_updated = rewrite_comments_extended_state(
-            unpacked,
-            comment_data.get("ordered_ids", []),
-            comment_data.get("parent_by_id", {}),
-            comment_data.get("state_by_id", {}),
-            comment_data.get("para_by_id", {}),
-            comment_data.get("durable_by_id", {}),
-            comment_data.get("presence_by_author", {}),
-        )
-        if not changed and not state_updated and not anchor_changed:
+        package_changed = ensure_word_settings_modern_compatibility(unpacked)
+
+        if comment_data and comment_data.get("ordered_ids"):
+            changed = rewrite_comments_from_markdown_threaded(
+                unpacked,
+                comment_data.get("ordered_ids", []),
+                comment_data.get("text_by_id", {}),
+                comment_data.get("author_by_id", {}),
+                comment_data.get("date_by_id", {}),
+                comment_data.get("parent_by_id", {}),
+            )
+            anchor_changed = ensure_thread_reply_anchors(
+                unpacked,
+                comment_data.get("ordered_ids", []),
+                comment_data.get("parent_by_id", {}),
+            )
+            state_updated = rewrite_comments_extended_state(
+                unpacked,
+                comment_data.get("ordered_ids", []),
+                comment_data.get("parent_by_id", {}),
+                comment_data.get("state_by_id", {}),
+                comment_data.get("para_by_id", {}),
+                comment_data.get("durable_by_id", {}),
+                comment_data.get("presence_by_author", {}),
+            )
+            package_changed = package_changed or bool(changed or state_updated or anchor_changed)
+
+        if not package_changed:
             return
         patched_docx = tmp_dir / "patched.docx"
         pack_docx(unpacked, patched_docx)
